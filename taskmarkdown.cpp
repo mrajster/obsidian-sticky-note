@@ -4,11 +4,14 @@
 */
 
 #include "taskmarkdown.h"
+#include "markdownscan_p.h"
 
 #include <QLatin1StringView>
 #include <QRegularExpression>
 #include <QStringView>
 #include <QUrl>
+
+using namespace TaskMarkdown::Scan;
 
 namespace
 {
@@ -26,14 +29,104 @@ const QRegularExpression &taskRe()
     return re;
 }
 
+/**
+ * Rewrite [[Wikilinks]] outside of inline code spans. Everything else -- including
+ * the trailing '\r' of a CRLF line -- is copied through byte for byte.
+ */
+QString inlineTransform(const QString &text)
+{
+    QString out;
+    out.reserve(text.size() + 16);
+
+    const qsizetype n = text.size();
+    qsizetype p = 0;
+    while (p < n) {
+        const QChar c = text.at(p);
+
+        if (c == QLatin1Char('`')) {
+            // A run of n backticks opens a code span closed by a run of exactly n.
+            const qsizetype runStart = p;
+            while (p < n && text.at(p) == QLatin1Char('`')) {
+                ++p;
+            }
+            const qsizetype runLen = p - runStart;
+            qsizetype q = p;
+            qsizetype spanEnd = -1;
+            while (q < n) {
+                if (text.at(q) != QLatin1Char('`')) {
+                    ++q;
+                    continue;
+                }
+                qsizetype r = q;
+                while (r < n && text.at(r) == QLatin1Char('`')) {
+                    ++r;
+                }
+                if (r - q == runLen) {
+                    spanEnd = r;
+                    break;
+                }
+                q = r;
+            }
+            if (spanEnd >= 0) {
+                out += QStringView(text).mid(runStart, spanEnd - runStart);
+                p = spanEnd;
+            } else {
+                // Unbalanced: the backticks are literal text, keep scanning after them.
+                out += QStringView(text).mid(runStart, runLen);
+            }
+            continue;
+        }
+
+        if (c == QLatin1Char('[') && p + 1 < n && text.at(p + 1) == QLatin1Char('[')) {
+            const qsizetype close = text.indexOf(QStringLiteral("]]"), p + 2);
+            if (close >= p + 2) {
+                const QString inner = text.mid(p + 2, close - (p + 2));
+                const qsizetype bar = inner.indexOf(QLatin1Char('|'));
+                const QString target = bar >= 0 ? inner.left(bar) : inner;
+                // An Obsidian EMBED ("![[Note]]") must not become a Markdown image:
+                // Text.MarkdownText would try to FETCH "obsnote:..." as an image
+                // source and log 'Protocol "obsnote" is unknown' for every embed.
+                // Render it as an ordinary link instead, labelled with the target
+                // (the part after '|' on an embed is a size hint like "300x200",
+                // which would make nonsense link text).
+                const bool isEmbed = !out.isEmpty() && out.endsWith(QLatin1Char('!'));
+                const QString display = isEmbed ? target : (bar >= 0 ? inner.mid(bar + 1) : inner);
+                if (!target.isEmpty()) {
+                    if (isEmbed) {
+                        out.chop(1); // drop the '!' so this is a link, not an image
+                    }
+                    out += QLatin1Char('[');
+                    out += display;
+                    out += QLatin1String("](");
+                    out += TaskMarkdown::linkScheme();
+                    out += QLatin1String(":wiki/");
+                    out += QString::fromLatin1(QUrl::toPercentEncoding(target));
+                    out += QLatin1Char(')');
+                    p = close + 2;
+                    continue;
+                }
+            }
+        }
+
+        out += c;
+        ++p;
+    }
+
+    return out;
+}
+
+} // namespace
+
+namespace TaskMarkdown::Scan
+{
+
 /** CommonMark measures indentation in columns; a tab advances to the next stop. */
+namespace
+{
 constexpr int kTabStop = 4;
+}
 
 /** A position inside a line: the byte index plus the column that index sits at. */
-struct Cursor {
-    qsizetype idx = 0;
-    int col = 0;
-};
 
 /**
  * Everything in this file matches against the line with its trailing carriage
@@ -169,12 +262,6 @@ int consumeListMarker(QStringView core, Cursor &c)
     return content;
 }
 
-struct FenceOpen {
-    bool ok = false;
-    QChar ch;
-    qsizetype len = 0;
-    int indent = 0;
-};
 
 /**
  * An opening code fence starting exactly at @p c: three or more backticks or
@@ -277,10 +364,6 @@ qsizetype frontmatterEnd(const QStringList &lines)
 }
 
 /** The result of one block-level pass over a document. */
-struct BlockScan {
-    qsizetype bodyStart = 0; //!< first line index that is not hidden frontmatter
-    QList<bool> isCode; //!< per source line: emit verbatim, never transform
-};
 
 /**
  * One CommonMark-shaped block pass. It tracks open list items so that the two
@@ -295,8 +378,10 @@ BlockScan scanBlocks(const QStringList &lines)
 {
     BlockScan scan;
     scan.isCode.fill(false, lines.size());
+    scan.code.fill(LineCode::Prose, lines.size());
 
     const qsizetype fmEnd = frontmatterEnd(lines);
+    scan.frontmatterEnd = fmEnd;
     if (fmEnd >= 0) {
         scan.bodyStart = fmEnd + 1;
         while (scan.bodyStart < lines.size() && isBlank(lineCore(lines.at(scan.bodyStart)))) {
@@ -321,7 +406,9 @@ BlockScan scanBlocks(const QStringList &lines)
         //     the same character and at least the same length closes it.
         if (inFence) {
             scan.isCode[i] = true;
+            scan.code[i] = LineCode::FenceBody;
             if (!blank && closesFence(core, fenceChar, fenceLen, fenceIndent)) {
+                scan.code[i] = LineCode::FenceClose;
                 inFence = false;
                 fenceLen = 0;
             }
@@ -346,6 +433,7 @@ BlockScan scanBlocks(const QStringList &lines)
         if (c.col >= base + 4 && (inIndentedCode || prevWasBlank)) {
             inIndentedCode = true;
             scan.isCode[i] = true;
+            scan.code[i] = LineCode::Indented;
             prevWasBlank = false;
             continue;
         }
@@ -373,6 +461,7 @@ BlockScan scanBlocks(const QStringList &lines)
                 fenceLen = f.len;
                 fenceIndent = f.indent;
                 scan.isCode[i] = true;
+                scan.code[i] = LineCode::FenceOpen;
             }
         }
     }
@@ -380,93 +469,7 @@ BlockScan scanBlocks(const QStringList &lines)
     return scan;
 }
 
-/**
- * Rewrite [[Wikilinks]] outside of inline code spans. Everything else -- including
- * the trailing '\r' of a CRLF line -- is copied through byte for byte.
- */
-QString inlineTransform(const QString &text)
-{
-    QString out;
-    out.reserve(text.size() + 16);
-
-    const qsizetype n = text.size();
-    qsizetype p = 0;
-    while (p < n) {
-        const QChar c = text.at(p);
-
-        if (c == QLatin1Char('`')) {
-            // A run of n backticks opens a code span closed by a run of exactly n.
-            const qsizetype runStart = p;
-            while (p < n && text.at(p) == QLatin1Char('`')) {
-                ++p;
-            }
-            const qsizetype runLen = p - runStart;
-            qsizetype q = p;
-            qsizetype spanEnd = -1;
-            while (q < n) {
-                if (text.at(q) != QLatin1Char('`')) {
-                    ++q;
-                    continue;
-                }
-                qsizetype r = q;
-                while (r < n && text.at(r) == QLatin1Char('`')) {
-                    ++r;
-                }
-                if (r - q == runLen) {
-                    spanEnd = r;
-                    break;
-                }
-                q = r;
-            }
-            if (spanEnd >= 0) {
-                out += QStringView(text).mid(runStart, spanEnd - runStart);
-                p = spanEnd;
-            } else {
-                // Unbalanced: the backticks are literal text, keep scanning after them.
-                out += QStringView(text).mid(runStart, runLen);
-            }
-            continue;
-        }
-
-        if (c == QLatin1Char('[') && p + 1 < n && text.at(p + 1) == QLatin1Char('[')) {
-            const qsizetype close = text.indexOf(QStringLiteral("]]"), p + 2);
-            if (close >= p + 2) {
-                const QString inner = text.mid(p + 2, close - (p + 2));
-                const qsizetype bar = inner.indexOf(QLatin1Char('|'));
-                const QString target = bar >= 0 ? inner.left(bar) : inner;
-                // An Obsidian EMBED ("![[Note]]") must not become a Markdown image:
-                // Text.MarkdownText would try to FETCH "obsnote:..." as an image
-                // source and log 'Protocol "obsnote" is unknown' for every embed.
-                // Render it as an ordinary link instead, labelled with the target
-                // (the part after '|' on an embed is a size hint like "300x200",
-                // which would make nonsense link text).
-                const bool isEmbed = !out.isEmpty() && out.endsWith(QLatin1Char('!'));
-                const QString display = isEmbed ? target : (bar >= 0 ? inner.mid(bar + 1) : inner);
-                if (!target.isEmpty()) {
-                    if (isEmbed) {
-                        out.chop(1); // drop the '!' so this is a link, not an image
-                    }
-                    out += QLatin1Char('[');
-                    out += display;
-                    out += QLatin1String("](");
-                    out += TaskMarkdown::linkScheme();
-                    out += QLatin1String(":wiki/");
-                    out += QString::fromLatin1(QUrl::toPercentEncoding(target));
-                    out += QLatin1Char(')');
-                    p = close + 2;
-                    continue;
-                }
-            }
-        }
-
-        out += c;
-        ++p;
-    }
-
-    return out;
-}
-
-} // namespace
+} // namespace TaskMarkdown::Scan
 
 namespace TaskMarkdown
 {

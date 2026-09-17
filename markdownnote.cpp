@@ -10,6 +10,7 @@
 
 #include "markdownnote.h"
 
+#include "markdownblocks.h"
 #include "taskmarkdown.h"
 
 #include <QCryptographicHash>
@@ -30,6 +31,13 @@ namespace
 constexpr char16_t kBomChar = 0xFEFF;
 constexpr char16_t kLineSeparator = 0x2028;
 constexpr char16_t kParagraphSeparator = 0x2029;
+// QTextDocument::toPlainText() -- i.e. every QQuickTextEdit's `text` -- also turns
+// these two noncharacters (its internal frame markers) into "\n" and every
+// NO-BREAK SPACE into a plain space. Measured over the whole BMP: CR, U+00A0,
+// U+2028, U+2029, U+FDD0 and U+FDD1 are the only characters it rewrites.
+constexpr char16_t kFrameStart = 0xFDD0;
+constexpr char16_t kFrameEnd = 0xFDD1;
+constexpr char16_t kNoBreakSpace = 0x00A0;
 
 const char kBomBytes[] = "\xEF\xBB\xBF";
 
@@ -57,12 +65,12 @@ QStringView lineCore(const QString &line)
 /** One physical line: its content plus the exact terminator that followed it. */
 struct PhysicalLine {
     QString content;
-    QString terminator; // "", "\n", "\r\n", "\r", U+2028 or U+2029
+    QString terminator; // "", "\n", "\r\n", "\r", U+2028, U+2029, U+FDD0 or U+FDD1
 };
 
 /**
  * Split on EVERY character QQuickTextEdit collapses into "\n" (CRLF, CR, LF,
- * U+2028, U+2029), keeping the terminator so it can be put back verbatim.
+ * U+2028, U+2029, U+FDD0, U+FDD1), keeping the terminator so it can be put back verbatim.
  * "a\nb\n" -> [{a,"\n"},{b,"\n"}];  "a\nb" -> [{a,"\n"},{b,""}];  "" -> [].
  */
 QList<PhysicalLine> splitPhysical(const QString &text)
@@ -77,7 +85,7 @@ QList<PhysicalLine> splitPhysical(const QString &text)
             term = (i + 1 < n && text.at(i + 1) == QLatin1Char('\n')) ? QStringLiteral("\r\n") : QStringLiteral("\r");
         } else if (c == u'\n') {
             term = QStringLiteral("\n");
-        } else if (c == kLineSeparator || c == kParagraphSeparator) {
+        } else if (c == kLineSeparator || c == kParagraphSeparator || c == kFrameStart || c == kFrameEnd) {
             term = QString(QChar(c));
         } else {
             continue;
@@ -89,6 +97,14 @@ QList<PhysicalLine> splitPhysical(const QString &text)
     if (start < n) {
         out.append(PhysicalLine{text.mid(start), QString()});
     }
+    return out;
+}
+
+/** A line's content as a QQuickTextEdit hands it back: every NO-BREAK SPACE is a plain space. */
+QString editorForm(const QString &content)
+{
+    QString out = content;
+    out.replace(QChar(kNoBreakSpace), QLatin1Char(' '));
     return out;
 }
 
@@ -202,6 +218,11 @@ QString MarkdownNote::renderedText() const
     return m_rendered;
 }
 
+QVariantList MarkdownNote::blocks() const
+{
+    return m_blocks;
+}
+
 MarkdownNote::Status MarkdownNote::status() const
 {
     return m_status;
@@ -240,6 +261,7 @@ QString MarkdownNote::editorText() const
     // Exactly what a QQuickTextEdit ends up holding once it has normalised the text.
     QList<PhysicalLine> lines = splitPhysical(m_raw);
     for (PhysicalLine &l : lines) {
+        l.content = editorForm(l.content);
         if (!l.terminator.isEmpty()) {
             l.terminator = QStringLiteral("\n");
         }
@@ -312,7 +334,8 @@ bool MarkdownNote::save(const QString &text)
     // here too, so an old QML caller that still calls save() cannot flatten the
     // line endings of a CRLF/CR note (S2).
     const bool looksNormalised = !text.contains(QLatin1Char('\r'))
-        && (m_raw.contains(QLatin1Char('\r')) || m_raw.contains(QChar(kLineSeparator)) || m_raw.contains(QChar(kParagraphSeparator)));
+        && (m_raw.contains(QLatin1Char('\r')) || m_raw.contains(QChar(kLineSeparator)) || m_raw.contains(QChar(kParagraphSeparator))
+            || m_raw.contains(QChar(kFrameStart)) || m_raw.contains(QChar(kFrameEnd)));
     return performWrite(looksNormalised ? restoreLineEndings(text) : text, false, false);
 }
 
@@ -335,32 +358,69 @@ QString MarkdownNote::restoreLineEndings(const QString &editorBuffer) const
     if (buffer.isEmpty()) {
         return editorBuffer;
     }
+    // What each original line looks like after QQuickTextEdit has held it. Lines
+    // are matched in THIS form and an untouched line gets its ORIGINAL content
+    // back, so a note with a NO-BREAK SPACE is not rewritten (NBSP -> space) just
+    // because the user entered and left EDIT mode.
+    QStringList seen;
+    seen.reserve(original.size());
+    for (const PhysicalLine &l : original) {
+        seen.append(editorForm(l.content));
+    }
 
     // Unchanged lines keep their EXACT original terminator, which is what keeps a
     // mixed-ending file (and a stray U+2028) intact; only lines the user actually
     // touched -- and lines that are new -- get the dominant ending.
     qsizetype prefix = 0;
-    while (prefix < original.size() && prefix < buffer.size() && original.at(prefix).content == buffer.at(prefix).content) {
+    while (prefix < original.size() && prefix < buffer.size() && seen.at(prefix) == buffer.at(prefix).content) {
         ++prefix;
     }
     qsizetype suffix = 0;
     while (suffix < original.size() - prefix && suffix < buffer.size() - prefix
-           && original.at(original.size() - 1 - suffix).content == buffer.at(buffer.size() - 1 - suffix).content) {
+           && seen.at(original.size() - 1 - suffix) == buffer.at(buffer.size() - 1 - suffix).content) {
         ++suffix;
     }
 
     const bool sameLineCount = original.size() == buffer.size();
     for (qsizetype i = 0; i < buffer.size(); ++i) {
-        if (buffer.at(i).terminator.isEmpty()) {
-            continue; // the last line has no ending: never invent one
-        }
         const PhysicalLine *match = nullptr;
         if (i < prefix) {
             match = &original.at(i);
         } else if (i >= buffer.size() - suffix) {
             match = &original.at(original.size() - (buffer.size() - i));
-        } else if (sameLineCount && original.at(i).content == buffer.at(i).content) {
+        } else if (sameLineCount && seen.at(i) == buffer.at(i).content) {
             match = &original.at(i);
+        }
+        if (match) {
+            buffer[i].content = match->content; // byte-exact, NBSPs included
+        } else if (sameLineCount && i >= prefix && i < buffer.size() - suffix) {
+            // An edited line that replaced exactly one original line (no lines
+            // were inserted or removed): the characters the user did NOT touch --
+            // its common head and tail with the original -- keep their original
+            // form, so typing one word does not turn every NBSP on the line into
+            // a space. Only positions where the two differ solely by NBSP -> ' '
+            // are restored.
+            const QString &orig = original.at(i).content;
+            const QString &form = seen.at(i);
+            QString &cur = buffer[i].content;
+            const qsizetype maxCommon = qMin(form.size(), cur.size());
+            qsizetype head = 0;
+            while (head < maxCommon && form.at(head) == cur.at(head)) {
+                ++head;
+            }
+            qsizetype tail = 0;
+            while (tail < maxCommon - head && form.at(form.size() - 1 - tail) == cur.at(cur.size() - 1 - tail)) {
+                ++tail;
+            }
+            for (qsizetype k = 0; k < head; ++k) {
+                cur[k] = orig.at(k);
+            }
+            for (qsizetype k = 0; k < tail; ++k) {
+                cur[cur.size() - 1 - k] = orig.at(orig.size() - 1 - k);
+            }
+        }
+        if (buffer.at(i).terminator.isEmpty()) {
+            continue; // the last line has no ending: never invent one
         }
         buffer[i].terminator = (match && !match->terminator.isEmpty()) ? match->terminator : dominant;
     }
@@ -922,6 +982,7 @@ void MarkdownNote::setRawText(const QString &text)
     }
     m_raw = text;
     m_rendered = TaskMarkdown::render(m_raw);
+    m_blocks = MarkdownBlocks::parse(m_raw);
     Q_EMIT rawTextChanged();
     Q_EMIT renderedTextChanged();
 }

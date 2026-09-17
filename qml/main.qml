@@ -30,9 +30,10 @@ PlasmoidItem {
     height: Kirigami.Units.gridUnit * 30 // default size for fullRepresentation
 
     Plasmoid.icon: "text-markdown"
-    // DECISION (contract §10.3): the standard Plasma frame, not the sticky-note
-    // KSvg paper -- rendered markdown needs theme-correct headings and links.
-    Plasmoid.backgroundHints: PlasmaCore.Types.DefaultBackground
+    // DECISION: no Plasma frame at all. DefaultBackground is the translucent,
+    // blurred dialog SVG; the widget instead draws its own OPAQUE theme-coloured
+    // card (see `card` in the full representation) so a note reads like a page.
+    Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
 
     expandedOnDragHover: true
     preloadFullRepresentation: true
@@ -80,6 +81,8 @@ PlasmoidItem {
 
     readonly property bool inPanel: [PlasmaCore.Types.TopEdge, PlasmaCore.Types.RightEdge, PlasmaCore.Types.BottomEdge, PlasmaCore.Types.LeftEdge].includes(Plasmoid.location)
     readonly property bool compactInPanel: inPanel && !!compactRepresentationItem?.visible
+    /** Shown inside a panel popup: the popup dialog already has its own frame. */
+    readonly property bool inPopup: root.inPanel && root.compactInPanel
     // Dynamic lookups through this are expected to produce qmllint
     // "missing-property" warnings; the full representation is a Component.
     readonly property Item fullRep: fullRepresentationItem
@@ -193,7 +196,9 @@ PlasmoidItem {
 
     Component.onCompleted: {
         if (!Plasmoid.configuration.fontSize) {
-            Plasmoid.configuration.fontSize = Kirigami.Theme.defaultFont.pointSize;
+            // 12 pt = 16 px, Obsidian's default body size. Only ever written for
+            // a fresh instance; a stored size is never rewritten.
+            Plasmoid.configuration.fontSize = 12;
         }
         root.syncNotePath();
     }
@@ -225,6 +230,32 @@ PlasmoidItem {
             }
         });
     }
+
+    /**
+     * VIEW -> EDIT from a click on the rendered view: caret at the start of the
+     * clicked block's source line, and that line kept at the block's height
+     * (blockTopY, view coordinates) so the text under the pointer does not jump.
+     * sourceLine -1 keeps the old restore/end behaviour.
+     */
+    function enterEditAtLine(sourceLine: int, blockTopY: real) {
+        if (sourceLine < 0) {
+            root.enterEdit(-1);
+            return;
+        }
+        const lines = note.editorText.split("\n");
+        let pos = 0;
+        for (let i = 0; i < Math.min(sourceLine, lines.length); ++i) {
+            pos += lines[i].length + 1;
+        }
+        const wasEditing = root.editMode;
+        root.enterEdit(Math.min(pos, note.editorText.length));
+        if (!wasEditing && root.editMode) {
+            root.pendingEditAnchorY = blockTopY;
+        }
+    }
+
+    /** View y the caret line should land on when beginEdit() runs; NaN when unanchored. */
+    property real pendingEditAnchorY: NaN
 
     /** Flush the editor buffer to disk; leaveMode also drops back to VIEW. */
     function commitEdit(leaveMode: bool) {
@@ -348,6 +379,15 @@ PlasmoidItem {
         Qt.openUrlExternally(note.obsidianUrl());
     }
 
+    /** A checkbox in the rendered view was clicked (S6: expected line text travels along). */
+    function toggleTask(line: int, expected: string) {
+        if (root.readOnly) {
+            root.reportError(root.readOnlyReason);
+            return;
+        }
+        note.toggleTask(line, expected); // stay in VIEW, do not focus
+    }
+
     /** Single dispatch point for every link in the rendered document. */
     function handleLink(link: string) {
         if (link === "") {
@@ -363,6 +403,9 @@ PlasmoidItem {
             // stale index instead of flipping whatever now sits on that line.
             note.toggleTask(toggleLine, note.lineTextAt(toggleLine)); // stay in VIEW, do not focus
             return;
+        }
+        if (link.startsWith("obsnote:tag/")) {
+            return; // tags are display-only pills; clicking one does nothing
         }
         const wikiTarget = note.wikilinkTargetForLink(link);
         if (wikiTarget !== "") {
@@ -596,12 +639,20 @@ PlasmoidItem {
                 // "\n", which is the only thing a QQuickTextEdit can hold anyway.
                 // C++ restores the file's own endings on the way back out.
                 editor.text = note.editorText;
+                editor.scrollToTop();
                 fullRep.editorPrimed = true;
                 const stored = sourcePos >= 0 ? sourcePos : Plasmoid.configuration.cursorPosition;
                 editor.cursorPosition = stored < 0
                     ? editor.length
                     : Math.max(0, Math.min(stored, editor.length));
                 editor.forceEditorFocus();
+                const anchorY = root.pendingEditAnchorY;
+                root.pendingEditAnchorY = NaN;
+                if (sourcePos >= 0 && !isNaN(anchorY)) {
+                    const pos = editor.cursorPosition;
+                    // After the TextArea's own ensure-cursor-visible pass.
+                    Qt.callLater(() => editor.alignPositionTo(pos, anchorY));
+                }
             }
 
             function showError(message: string) {
@@ -650,10 +701,31 @@ PlasmoidItem {
                 }
             }
 
+            // The opaque card. Replaces the translucent DefaultBackground frame.
+            Kirigami.ShadowedRectangle {
+                id: card
+
+                anchors.fill: parent
+                // NoBackground also dropped the shadow Plasma draws around its
+                // standard frame; draw an equivalent one around the card.
+                shadow.size: root.inPopup ? 0 : Kirigami.Units.gridUnit
+                shadow.yOffset: root.inPopup ? 0 : 2
+                shadow.color: Qt.rgba(0, 0, 0, 0.4)
+                Kirigami.Theme.colorSet: Kirigami.Theme.View
+                Kirigami.Theme.inherit: false
+                color: Kirigami.Theme.backgroundColor
+                radius: root.inPopup ? 0 : Kirigami.Units.cornerRadius
+                border.width: root.inPopup ? 0 : 1
+                border.color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, Kirigami.Theme.frameContrast)
+            }
+
             ColumnLayout {
                 id: mainColumn
 
                 anchors.fill: parent
+                // Inside the card's 1 px frame, no more: the 2em reading margin
+                // lives inside NoteView / NoteEditor.
+                anchors.margins: card.border.width
                 spacing: 0
 
                 Kirigami.InlineMessage {
@@ -806,13 +878,17 @@ PlasmoidItem {
 
                             // Must be qualified; see root.noteBackend.
                             note: root.noteBackend
-                            markdown: root.noteBackend.renderedText
-                            fontSize: Plasmoid.configuration.fontSize || Kirigami.Theme.defaultFont.pointSize
+                            basePointSize: Plasmoid.configuration.fontSize || 12
                             fontFamily: Plasmoid.configuration.fontFamily !== ""
                                 ? Plasmoid.configuration.fontFamily
                                 : Kirigami.Theme.defaultFont.family
+                            inlineTitle: root.noteBackend.fileName.replace(/\.md$/i, "")
+                            showInlineTitle: Plasmoid.configuration.showInlineTitle
+                            showProperties: Plasmoid.configuration.showProperties
+                            readOnly: root.readOnly
 
-                            onEditRequested: root.enterEdit(-1)
+                            onEditRequested: (sourceLine, blockTopY) => root.enterEditAtLine(sourceLine, blockTopY)
+                            onTaskToggleRequested: (line, expected) => root.toggleTask(line, expected)
                             onLinkClicked: link => root.handleLink(link)
                             onContextMenuRequested: contextMenu.popup()
                         }
@@ -839,7 +915,29 @@ PlasmoidItem {
                                 : (Plasmoid.configuration.fontFamily !== ""
                                     ? Plasmoid.configuration.fontFamily
                                     : Kirigami.Theme.defaultFont.family)
-                            font.pointSize: Plasmoid.configuration.fontSize || Kirigami.Theme.defaultFont.pointSize
+                            // Same base size and padding as the view: VIEW <-> EDIT must not jump.
+                            font.pointSize: noteView.basePointSize
+                            contentPadding: noteView.metrics.containerPadding
+                            headerSpacing: noteView.metrics.inlineTitleMarginBottom
+                            header: noteView.showInlineTitle && noteView.inlineTitle !== "" ? editorTitle : null
+
+                            Component {
+                                id: editorTitle
+
+                                InlineText {
+                                    width: parent ? parent.width : 0
+                                    html: "<p style=\"margin:0\">" + noteView.metrics.escapeHtml(noteView.inlineTitle) + "</p>"
+                                    decorations: []
+                                    metrics: noteView.metrics
+                                    fontPx: noteView.metrics.inlineTitleSize
+                                    fontWeight: noteView.metrics.headingWeight(1)
+                                    fontMetrics: noteView.metrics.headingMetrics(1)
+                                    letterSpacing: noteView.metrics.headingLetterSpacing(1)
+                                    lineHeightPx: noteView.metrics.inlineTitleLineHeight
+                                    struck: false
+                                    availableWidth: width
+                                }
+                            }
 
                             // THE click-out path on a desktop containment. Armed
                             // only in EDIT mode; "inside" is the whole widget, so
@@ -877,143 +975,153 @@ PlasmoidItem {
                     }
                 }
 
-                PlasmaExtras.PlasmoidHeading {
-                    id: toolbar
-
-                    position: PlasmaExtras.PlasmoidHeading.Footer
+                // Footer. Deliberately NOT a PlasmaExtras.PlasmoidHeading: that paints
+                // Plasma's translucent footer SVG and gives itself negative insets so it
+                // reaches the edge of the standard applet frame. With NoBackground there
+                // is no frame, so it overhung the opaque card by the frame margins.
+                Rectangle {
                     Layout.fillWidth: true
+                    implicitHeight: 1
+                    color: card.border.color
+                }
 
-                    contentItem: RowLayout {
-                        id: toolbarRow
+                RowLayout {
+                    id: toolbarRow
 
-                        spacing: Kirigami.Units.smallSpacing
+                    Layout.fillWidth: true
+                    // Line the file name up with the note text column.
+                    Layout.leftMargin: Math.max(0, noteView.metrics.containerPadding - card.border.width)
+                    Layout.rightMargin: Kirigami.Units.smallSpacing
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                    Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    spacing: Kirigami.Units.smallSpacing
 
-                        PlasmaComponents3.Label {
-                            id: fileLabel
 
-                            Layout.fillWidth: true
-                            visible: Plasmoid.configuration.showFileName
-                            text: note.fileName
-                            elide: Text.ElideMiddle
-                            textFormat: Text.PlainText
+                    PlasmaComponents3.Label {
+                        id: fileLabel
 
-                            PlasmaComponents3.ToolTip {
-                                text: note.path
-                                visible: fileLabel.hovered && note.path !== ""
-                            }
+                        Layout.fillWidth: true
+                        visible: Plasmoid.configuration.showFileName
+                        text: note.fileName
+                        elide: Text.ElideMiddle
+                        textFormat: Text.PlainText
 
-                            HoverHandler {
-                                id: fileLabelHover
-                            }
-
-                            property bool hovered: fileLabelHover.hovered
+                        PlasmaComponents3.ToolTip {
+                            text: note.path
+                            visible: fileLabel.hovered && note.path !== ""
                         }
 
-                        Item { // spacer, keeps the buttons right-aligned when the label is hidden
-                            Layout.fillWidth: !fileLabel.visible
+                        HoverHandler {
+                            id: fileLabelHover
                         }
 
-                        PlasmaComponents3.ToolButton {
-                            id: modeButton
+                        property bool hovered: fileLabelHover.hovered
+                    }
 
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            icon.name: root.editMode ? "document-save" : "document-edit"
-                            text: root.editMode ? i18nc("@action:button", "Done") : i18nc("@action:button", "Edit")
-                            enabled: (note.status === MarkdownNote.Ready && !root.readOnly) || root.editMode
-                            onClicked: {
-                                if (root.editMode) {
-                                    root.commitEdit(true);
-                                } else {
-                                    root.enterEdit(-1);
-                                }
-                            }
+                    Item { // spacer, keeps the buttons right-aligned when the label is hidden
+                        Layout.fillWidth: !fileLabel.visible
+                    }
 
-                            PlasmaComponents3.ToolTip {
-                                text: modeButton.text
-                            }
-                        }
+                    PlasmaComponents3.ToolButton {
+                        id: modeButton
 
-                        PlasmaComponents3.ToolButton {
-                            id: reloadButton
-
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            icon.name: "view-refresh"
-                            text: i18nc("@action:button", "Reload from Disk")
-                            enabled: note.status !== MarkdownNote.NoPath
-                            onClicked: root.reloadFromDisk()
-
-                            PlasmaComponents3.ToolTip {
-                                text: reloadButton.text
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        icon.name: root.editMode ? "document-save" : "document-edit"
+                        text: root.editMode ? i18nc("@action:button", "Done") : i18nc("@action:button", "Edit")
+                        enabled: (note.status === MarkdownNote.Ready && !root.readOnly) || root.editMode
+                        onClicked: {
+                            if (root.editMode) {
+                                root.commitEdit(true);
+                            } else {
+                                root.enterEdit(-1);
                             }
                         }
 
-                        PlasmaComponents3.ToolButton {
-                            id: openButton
+                        PlasmaComponents3.ToolTip {
+                            text: modeButton.text
+                        }
+                    }
 
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            icon.name: "document-open"
-                            text: i18nc("@action:button", "Open Markdown File…")
-                            onClicked: root.pickFile()
+                    PlasmaComponents3.ToolButton {
+                        id: reloadButton
 
-                            PlasmaComponents3.ToolTip {
-                                text: openButton.text
-                            }
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        icon.name: "view-refresh"
+                        text: i18nc("@action:button", "Reload from Disk")
+                        enabled: note.status !== MarkdownNote.NoPath
+                        onClicked: root.reloadFromDisk()
+
+                        PlasmaComponents3.ToolTip {
+                            text: reloadButton.text
+                        }
+                    }
+
+                    PlasmaComponents3.ToolButton {
+                        id: openButton
+
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        icon.name: "document-open"
+                        text: i18nc("@action:button", "Open Markdown File…")
+                        onClicked: root.pickFile()
+
+                        PlasmaComponents3.ToolTip {
+                            text: openButton.text
+                        }
+                    }
+
+                    PlasmaComponents3.ToolButton {
+                        id: obsidianButton
+
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        visible: note.status === MarkdownNote.Ready
+                        icon.name: "emblem-symbolic-link"
+                        text: i18nc("@action:button", "Open in Obsidian")
+                        onClicked: root.openInObsidian()
+
+                        PlasmaComponents3.ToolTip {
+                            text: obsidianButton.text
+                        }
+                    }
+
+                    PlasmaComponents3.ToolButton {
+                        id: pinButton
+
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        visible: root.compactInPanel
+                        checkable: true
+                        checked: Plasmoid.configuration.pinOpen
+                        icon.name: "window-pin"
+                        text: i18nc("@action:button pin popup for panel widget", "Keep Open")
+                        onToggled: Plasmoid.configuration.pinOpen = checked
+
+                        PlasmaComponents3.ToolTip {
+                            text: pinButton.text
                         }
 
-                        PlasmaComponents3.ToolButton {
-                            id: obsidianButton
-
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            visible: note.status === MarkdownNote.Ready
-                            icon.name: "emblem-symbolic-link"
-                            text: i18nc("@action:button", "Open in Obsidian")
-                            onClicked: root.openInObsidian()
-
-                            PlasmaComponents3.ToolTip {
-                                text: obsidianButton.text
-                            }
+                        Binding {
+                            target: root
+                            property: "hideOnWindowDeactivate"
+                            value: !Plasmoid.configuration.pinOpen
+                            restoreMode: Binding.RestoreNone
                         }
+                    }
 
-                        PlasmaComponents3.ToolButton {
-                            id: pinButton
+                    PlasmaComponents3.ToolButton {
+                        id: settingsButton
 
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            visible: root.compactInPanel
-                            checkable: true
-                            checked: Plasmoid.configuration.pinOpen
-                            icon.name: "window-pin"
-                            text: i18nc("@action:button pin popup for panel widget", "Keep Open")
-                            onToggled: Plasmoid.configuration.pinOpen = checked
+                        focusPolicy: Qt.TabFocus
+                        display: PlasmaComponents3.AbstractButton.IconOnly
+                        icon.name: "configure"
+                        text: Plasmoid.internalAction("configure").text
+                        onClicked: Plasmoid.internalAction("configure").trigger()
 
-                            PlasmaComponents3.ToolTip {
-                                text: pinButton.text
-                            }
-
-                            Binding {
-                                target: root
-                                property: "hideOnWindowDeactivate"
-                                value: !Plasmoid.configuration.pinOpen
-                                restoreMode: Binding.RestoreNone
-                            }
-                        }
-
-                        PlasmaComponents3.ToolButton {
-                            id: settingsButton
-
-                            focusPolicy: Qt.TabFocus
-                            display: PlasmaComponents3.AbstractButton.IconOnly
-                            icon.name: "configure"
-                            text: Plasmoid.internalAction("configure").text
-                            onClicked: Plasmoid.internalAction("configure").trigger()
-
-                            PlasmaComponents3.ToolTip {
-                                text: settingsButton.text
-                            }
+                        PlasmaComponents3.ToolTip {
+                            text: settingsButton.text
                         }
                     }
                 }

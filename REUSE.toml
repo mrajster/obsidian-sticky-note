@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 obsidian-sticky-note contributors
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Licensing for files that cannot carry an inline SPDX header without changing
+# their bytes (test fixtures, measured reference data, screenshots) or that
+# have no comment syntax (JSON).
+version = 1
+
+[[annotations]]
+path = [
+    ".gitignore",
+    "README.md",
+    "docs/screenshots/**.png",
+    "tests/format-reference.md",
+    "tests/obsidian-torture.md",
+    "tests/geometry/FORMAT-REFERENCE.md",
+    "tests/geometry/obsidian-1.13.7-rects.json",
+    "tests/geometry/obsidian-1.13.7-rects-380.json",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 obsidian-sticky-note contributors"
+SPDX-License-Identifier = "GPL-2.0-or-later"
+
+[[annotations]]
+path = "metadata.json"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+    "2014 David Edmundson <davidedmundson@kde.org>",
+    "2014, 2015 Kai Uwe Broulik <kde@privat.broulik.de>",
+    "2026 obsidian-sticky-note contributors",
+]
+SPDX-License-Identifier = "GPL-2.0-or-later"

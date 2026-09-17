@@ -33,6 +33,12 @@
     <entry name="showFileName" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="showInlineTitle" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="showProperties" type="Bool">
+      <default>true</default>
+    </entry>
     <entry name="cursorPosition" type="Int">
       <default>-1</default>
     </entry>

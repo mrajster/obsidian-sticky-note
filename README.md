@@ -12,18 +12,50 @@ Applet id: `io.github.mrajster.obsidiannote` · Plasma 6 · GPL-2.0-or-later
 | | |
 | --- | --- |
 | ![View mode with a rendered checklist](docs/screenshots/01-view-checklist.png) | ![Edit mode showing the raw Markdown source](docs/screenshots/02-edit-raw-markdown.png) |
-| **View mode.** The note is rendered; the checkboxes are clickable and write straight to the file. | **Edit mode.** One click drops you into the raw Markdown source, in a monospace editor. |
+| **View mode.** The note is rendered with Obsidian's reading-view formatting; task checkboxes are clickable and write straight to the file. | **Edit mode.** A click on the text opens the raw Markdown source at the clicked line. Same padding and base size as the view. |
 | ![The widget configuration page for choosing the Markdown file](docs/screenshots/03-config-file-page.png) | ![The widget sitting on the Plasma desktop](docs/screenshots/04-on-desktop.png) |
-| **Configuration.** Bind the widget to any `.md` file; autosave delay and the file-name header live here too. | **Sticky-note sizing.** The same note at desktop-widget size; it behaves like the stock sticky note, except the note is a file in your vault. |
+| **Configuration.** Bind the widget to any `.md` file; autosave delay and the file-name footer label live here too. | **On the desktop.** An opaque card with a drop shadow; the file name and buttons sit in a footer inside the card. |
 
 ## Features
 
-- **Markdown rendering in view mode.** The note is rendered rather than shown as
-  source. Rendering uses Qt's `Text.MarkdownText` (CommonMark plus GFM tables),
-  so Obsidian-only inline syntax such as `==highlight==` or `> [!note]` callouts
-  is displayed as literal text rather than styled.
+- **Formatting that matches Obsidian's reading view.** The note is parsed into
+  blocks (`markdownblocks.cpp`) and laid out by QML block components using
+  Obsidian 1.13.7's reading-view CSS, expressed in em of the base font
+  (`qml/ObsidianMetrics.qml`). It copies Obsidian's *formatting*, not its colours:
+  - 2em reading padding around the note;
+  - headings H1–H6 at Obsidian's sizes (1.618em down to 1em), weights,
+    line heights and letter spacing, with the larger 2.5em gap in front of a
+    heading that follows a paragraph, list, code block or blockquote;
+  - bullet, ordered and task lists with Obsidian's indents and 1 px indentation
+    guides; task items show **only a checkbox, no bullet**;
+  - blockquotes, `> [!type]` callouts with Obsidian's Lucide icon per callout
+    family (aliases such as `tip`/`hint` resolved; `-`/`+` callouts fold and
+    unfold in the view only — the file is not touched);
+  - fenced and indented code blocks, GFM tables (with column alignment),
+    horizontal rules;
+  - inline `**bold**`, `*italic*`, `~~strike~~`, `==highlight==`, inline-code
+    and `#tag` pills, `[[wikilinks]]` (alias and `#heading` forms) and Markdown
+    links;
+  - an optional **inline title** (the file name without `.md`) and an optional
+    **Properties** block for YAML frontmatter (`showInlineTitle` and
+    `showProperties` in `main.xml`, both on by default).
+
+  Colours come from the Plasma (Kirigami) theme: text, links, highlight, callout
+  and code backgrounds all follow the active colour scheme.
+- **Opaque card with a drop shadow.** Instead of Plasma's translucent, blurred
+  applet frame (`NoBackground`), the widget draws its own opaque card in the
+  theme's View background colour, with a 1 px frame, the Plasma corner radius and
+  a drop shadow. The footer — file name plus buttons — sits inside the card. In a
+  panel popup the card has no frame, radius or shadow, because the popup already
+  has one.
+- **No scrollbars.** Neither the view nor the editor draws a scrollbar on either
+  axis. Text always wraps (at word boundaries, or anywhere for an over-long
+  word), so nothing overflows sideways and there is no horizontal scrolling. The
+  mouse wheel (and touch) still scrolls notes taller than the widget.
 - **Click to edit, click out to save.** A left click on non-link text switches to
-  a plain-text editor holding the exact file source; clicking anywhere outside
+  a plain-text editor holding the exact file source, with the caret at the start
+  of the clicked block's source line and that line scrolled to where the block
+  was drawn; clicking anywhere outside
   the widget, or pressing `Esc`, saves and re-renders. `Ctrl+S` saves without
   leaving edit mode. An optional autosave timer (default 10 s, `Off` allowed)
   saves while you type.
@@ -32,7 +64,7 @@ Applet id: `io.github.mrajster.obsidiannote` · Plasma 6 · GPL-2.0-or-later
   file is not re-serialised. The toggle re-reads the file first, checks the line
   still says what the render thought it said, and refuses otherwise.
 - **Opens any `.md` file anywhere.** Choose it in the config page, use
-  *Open Markdown File…* from the toolbar or context menu, or drag a
+  *Open Markdown File…* from the footer or context menu, or drag a
   `text/markdown` / `text/plain` file onto the widget. The file does not have to
   be in a vault — the config page only warns when the name does not end in `.md`,
   because Obsidian will not index it.
@@ -46,6 +78,15 @@ Applet id: `io.github.mrajster.obsidiannote` · Plasma 6 · GPL-2.0-or-later
   endings (LF/CRLF/CR, including mixed files, where unchanged lines keep their
   original ending) and a leading UTF-8 BOM are restored on every write, and a
   missing trailing newline is neither invented nor removed.
+- **Entering and leaving edit mode does not rewrite the file.** A Qt `TextEdit`
+  silently normalises a few characters: it turns NO-BREAK SPACE (U+00A0) into a
+  plain space and CR, U+2028, U+2029, U+FDD0 and U+FDD1 into line breaks. The
+  widget maps the edited buffer back onto the original lines, so opening and
+  closing the editor without typing writes nothing, and every line you did not
+  touch is written back byte-exact. **Remaining limit:** if an edit adds or
+  removes lines, a line you actually edited may lose its no-break spaces (they
+  become ordinary spaces). When the line count is unchanged, the unedited start
+  and end of an edited line keep theirs.
 - **Detects external edits and reloads.** A `KDirWatch` on the file picks up
   writes from Obsidian or a sync client and reloads the view; a reload is
   deferred, not silently applied, while you are editing.
@@ -65,7 +106,66 @@ Applet id: `io.github.mrajster.obsidiannote` · Plasma 6 · GPL-2.0-or-later
   `![[Embed]]` render as clickable links that open
   `obsidian://open?file=…`; *Open in Obsidian* opens the bound file itself. This
   needs Obsidian installed and registered for the `obsidian://` scheme —
-  otherwise nothing happens.
+  otherwise nothing happens. `![[embeds]]` are shown as links, not as the
+  embedded content. Clicking a `#tag` pill does nothing.
+
+## How close is it to Obsidian?
+
+![Obsidian 1.13.7 and the widget rendering the same note](docs/screenshots/05-obsidian-parity.png)
+
+*The same note rendered by Obsidian 1.13.7's reading view and by the widget.
+The colours differ on purpose: the widget uses the Plasma theme.*
+
+The layout is checked **numerically**, not by eye. `tests/geometry/` holds the
+note `FORMAT-REFERENCE.md` (headings H1/H2, paragraphs, nested bullet, ordered
+and task lists, a blockquote, a callout, inline code, a code block, a table, a
+rule, and bold/italic/strike/highlight/wikilink/tag) together with the rects
+measured from a real Obsidian 1.13.7 render of it: 16 px base font, Noto Sans
+text and DejaVu Sans Mono code, device pixel ratio 1, at content widths of
+**700 px and 380 px**, inline title off.
+
+The `geometry_parity` ctest lays the same note out in the headless harness at
+both widths and compares every block — headings, paragraphs, list items,
+bullets, checkboxes, indentation guides, blockquote, callout (box, title, icon,
+content), code block, table/row/cell, rule, inline-code and tag pills,
+highlight box — on x, y, width, height, text start and first baseline, plus the
+line count. Tolerance is **1 px** (2 px for the widths of tables, cells and
+pills). Current result at both widths: 56/56 matched, none out of tolerance;
+the largest deviation is 0.56 px (x) at 700 px and 0.48 px (width) at 380 px.
+
+What this does **not** cover:
+
+- colours — they come from the Plasma theme by design;
+- H3–H6, the inline title and the Properties block (their numbers are taken
+  from Obsidian's CSS but are not in the measured reference);
+- other fonts, sizes and widths than those above, and HiDPI scaling;
+- anti-aliasing and glyph rasterisation. `tests/parity/pixels.py` checks which
+  device pixels rules, grid lines, guides, pills, highlights, checkbox frames
+  and bullets land on: on the harness's own render it currently matches 32/36
+  of those edges exactly at 700 px and 33/36 at 380 px, and all 36 within 1 px.
+
+## Known limits
+
+- **Obsidian-only features are not rendered like Obsidian.** Embeds
+  (`![[note]]`, `![[image.png]]`) and Markdown images become links; nothing is
+  fetched or inlined. Math (`$…$`, `$$…$$`) is not typeset: inline math shows as
+  italic source, a `$$` block as a code block. Footnotes are not collected:
+  `[^1]` and `^[inline]` show as superscript markers, and definitions are not
+  gathered into a footnotes section. Dataview, Mermaid and other plugin blocks
+  are shown as ordinary code blocks, and code blocks have no syntax
+  highlighting. Raw HTML is shown literally. `%%comments%%` are hidden within a
+  paragraph, as in Obsidian.
+- **Properties are read-only**: a "Properties" heading and one row per key, with
+  list values as pills. Obsidian's typed property widgets and editing are not
+  implemented.
+- **`showInlineTitle` and `showProperties` have no switch in the configuration
+  dialog yet**; they are stored entries in `main.xml` and default to on.
+- **Checkboxes inside blockquotes and callouts** are drawn but cannot be
+  clicked; the widget never writes into a quoted line.
+- **Edit mode near the top of a note shifts the text slightly.** The editor
+  keeps the clicked line where the block was drawn, but it cannot scroll above
+  the start of the file, and a rendered heading is taller than its raw source
+  line, so text near the top moves a little when switching modes.
 
 ## Requirements
 
@@ -81,7 +181,9 @@ sudo pacman -S --needed base-devel cmake extra-cmake-modules \
 ```
 
 `plasma-sdk` is optional and only needed for `scripts/run-viewer.sh`
-(`plasmoidviewer`).
+(`plasmoidviewer`). The `geometry_parity` test additionally needs Python 3,
+`fc-list` (fontconfig) and the **Noto Sans** and **DejaVu Sans Mono** fonts; it
+is skipped when the fonts are missing and not registered without Python 3.
 
 **Debian / Ubuntu** (packages present in Debian trixie and newer):
 
@@ -251,21 +353,23 @@ cmake --build build --target uninstall
 
 **Binding it to a file.** Any of: the *Markdown file* field (or *Choose Markdown
 File…*) on the config page — e.g. `~/Vault/Note.md`; the *Open Markdown File…*
-toolbar button or context menu entry; dropping a `.md` file onto the widget.
+footer button or context menu entry; dropping a `.md` file onto the widget.
 If *Create the file if it does not exist* is on (the default), a missing file —
 and its parent directories — is created on demand.
 
 **Clicking.** In view mode a left click on a link follows it; a left click
-anywhere else enters edit mode with the cursor near where you clicked. A right
+anywhere else enters edit mode with the caret at the start of the clicked
+block's source line (outside any block: the last stored caret position, or
+the end of the note). A right
 click opens the widget's own menu (Edit, Copy All, Reload from Disk, Open
 Markdown File…, Open in Obsidian) rather than the desktop menu. Clicking outside
 the widget leaves edit mode and saves.
 
-**Checkboxes.** Rendered task lines show a ballot-box glyph, empty or ticked.
-Clicking one flips that line in the file immediately — there is no edit mode
-and no full rewrite. Task markers inside fenced or indented code blocks, and
-inside YAML frontmatter, are not rendered as checkboxes and cannot be
-toggled. A toggle is refused, with a message and without writing anything, if
+**Checkboxes.** Task lines are drawn as Obsidian-style checkboxes (no bullet),
+empty or ticked. Clicking one flips that line in the file immediately — there is
+no edit mode and no full rewrite. Task markers inside fenced or indented code
+blocks, and inside YAML frontmatter, are not rendered as checkboxes; checkboxes
+inside blockquotes and callouts are drawn but cannot be toggled. A toggle is refused, with a message and without writing anything, if
 the file changed since it was rendered.
 
 **Banners.** *This file was changed outside the widget* offers **Reload**
@@ -281,10 +385,12 @@ before a reload would discard unsaved changes.
 | File | Markdown file | *(empty)* |
 | File | Create the file if it does not exist | on |
 | File | Autosave delay (`0` = `Off`, up to 600 s) | 10 s |
-| File | Show file name in the toolbar | on |
-| Appearance | Text font size | theme default |
+| File | Show file name in the toolbar (the footer) | on |
+| Appearance | Text font size | 12 pt (= 16 px, Obsidian's default body size) |
 | Appearance | Text font | theme default |
 | Appearance | Use a monospace font while editing | on |
+| *(no UI)* | `showInlineTitle` — file name as an inline title | on |
+| *(no UI)* | `showProperties` — frontmatter as a Properties block | on |
 
 **Keyboard shortcuts:**
 
@@ -297,7 +403,7 @@ before a reload would discard unsaved changes.
 | `Ctrl+Z` / `Ctrl+Shift+Z` | edit mode | Undo / Redo |
 | `Ctrl+X` / `Ctrl+C` / `Ctrl+V` / `Ctrl+A` | edit mode | Cut / Copy / Paste / Select All |
 
-In a panel, the toolbar also has a **Keep Open** pin so the popup does not close
+In a panel, the footer also has a **Keep Open** pin so the popup does not close
 when it loses focus.
 
 ## Building and testing from source
@@ -312,15 +418,17 @@ ctest --test-dir build --output-on-failure
 ```console
 $ ctest --test-dir build --output-on-failure
     Start 1: appstreamtest
-1/4 Test #1: appstreamtest ....................   Passed    0.01 sec
+1/5 Test #1: appstreamtest ....................   Passed    0.01 sec
     Start 2: tst_taskmarkdown
-2/4 Test #2: tst_taskmarkdown .................   Passed    3.36 sec
+2/5 Test #2: tst_taskmarkdown .................   Passed    3.48 sec
     Start 3: tst_markdownnote
-3/4 Test #3: tst_markdownnote .................   Passed    0.08 sec
+3/5 Test #3: tst_markdownnote .................   Passed    0.72 sec
     Start 4: obsnote_qmlharness
-4/4 Test #4: obsnote_qmlharness ...............   Passed    1.77 sec
+4/5 Test #4: obsnote_qmlharness ...............   Passed    2.43 sec
+    Start 5: geometry_parity
+5/5 Test #5: geometry_parity ..................   Passed    8.14 sec
 
-100% tests passed out of 4
+100% tests passed out of 5
 ```
 
 `scripts/build.sh` runs all of the above (plus install and verification) in one
@@ -330,7 +438,10 @@ What the suites cover:
 
 - **`appstreamtest`** — metadata validation, contributed automatically by
   Plasma's `plasma_add_applet()` CMake macro.
-- **`tst_taskmarkdown`** — the pure rendering/parsing layer: `splitLines`/
+- **`tst_taskmarkdown`** — the pure rendering/parsing layer, including the block
+  model (`MarkdownBlocks::parse`: a clickable task block exists for a line exactly
+  when that line is a toggleable task, callout aliases and fold state, setext
+  headings, math blocks, spacing tokens, inline HTML generation): `splitLines`/
   `joinLines` round-trips, task-line recognition, single-character toggling
   (including CRLF lines), `obsnote:` link parsing, wikilink rewriting, embeds
   becoming links rather than images, frontmatter hiding, fenced and indented
@@ -341,15 +452,45 @@ What the suites cover:
 - **`tst_markdownnote`** — the file-safety policy: CRLF / CR-only / mixed line
   endings surviving an edit-and-commit, U+2028 surviving, the trailing newline
   being neither invented nor dropped, a BOM surviving a toggle, invalid UTF-8
-  going read-only and refusing every write, saves and toggles aborting when the
+  going read-only and refusing every write, no-break spaces and U+FDD0/U+FDD1
+  surviving an untouched edit session and a one-word edit byte-exact, saves and toggles aborting when the
   file changed underneath, an identical rewrite not counting as a conflict and
   not writing, autosave refusing while a conflict is pending, `reloadFromDisk()`
   never saving first, toggles being refused for fenced lines and for stale
   expected text, and a source-level assertion that `QSaveFile`'s in-place
   truncating fallback is never re-enabled.
-- **`obsnote_qmlharness`** — a headless (`QT_QPA_PLATFORM=offscreen`) smoke test
+- **`obsnote_qmlharness`** — a headless (`QT_QPA_PLATFORM=offscreen`) test
   that instantiates the real `NoteView.qml` and `NoteEditor.qml` against the
-  torture fixture and fails on any QML warning or error.
+  torture fixture, checks the block model, toggle refusal and that an untouched
+  editor round-trip writes nothing, and fails on any QML warning or error.
+- **`geometry_parity`** — runs `obsnote_qmlharness --dump-geometry` on
+  `tests/geometry/FORMAT-REFERENCE.md` at widths 700 and 380 (16 px base, Noto
+  Sans) and compares the rects with Obsidian 1.13.7's measured ones using
+  `tests/geometry/compare_geometry.py` (1 px tolerance, 2 px for table and pill
+  widths, exact line counts). See [How close is it to
+  Obsidian?](#how-close-is-it-to-obsidian). Exits as *skipped* when Noto Sans or
+  DejaVu Sans Mono is not installed.
+
+Two developer tools in `tests/parity/` are not run by ctest (`pixels.py` needs
+Pillow and numpy). Both take a reference from `tests/geometry/` and the files
+`geometry_parity` leaves in `build/tests/geometry_parity/`:
+
+```bash
+python3 tests/parity/compare.py tests/geometry/obsidian-1.13.7-rects.json \
+    build/tests/geometry_parity/ours-700.json
+python3 tests/parity/pixels.py tests/geometry/obsidian-1.13.7-rects.json \
+    build/tests/geometry_parity/ours-700.png --origin 32,32
+```
+
+- **`compare.py`** — the same rect comparison as a per-block table, with
+  vertical offsets measured relative to the previous block so one drift does not
+  cascade (tolerances 2 px vertical, 1.5 px horizontal).
+- **`pixels.py`** — paint-level parity: predicts from the reference rects the
+  device pixels Chromium paints each rule, grid line, guide, pill, highlight,
+  checkbox frame and bullet on, and measures a PNG against that (`--tol`, default
+  0 px). It exits non-zero today: 32/36 edges exact at 700 px, 33/36 at 380 px,
+  36/36 with `--tol 1`. Run the harness with `QT_QUICK_BACKEND=rhi` to check the
+  GPU renderer Plasma uses instead of the software one.
 
 There is also a QML lint target:
 
@@ -357,30 +498,36 @@ There is also a QML lint target:
 cmake --build build --target io.github.mrajster.obsidiannote_qmllint
 ```
 
-It currently reports `unqualified access` warnings for the `i18n()` calls, which
-is expected for KDE QML and does not fail the build.
+It currently reports warnings — mostly `unqualified access` (Plasma/KDE QML
+context properties) and `missing-property` for dynamically typed delegates — and
+does not fail the build.
 
 ## How it differs from the original Sticky Note widget
 
 | | Sticky Note (`org.kde.plasma.notes`) | Obsidian Note |
 | --- | --- | --- |
 | Where the text lives | in the widget's own private note storage managed by Plasma | in a `.md` file you choose, anywhere on disk |
-| Format | rich text / HTML, with a bold–italic–underline toolbar | Markdown source, rendered read-only via `Text.MarkdownText` |
+| Format | rich text / HTML, with a bold–italic–underline toolbar | Markdown source, rendered read-only with Obsidian's reading-view formatting |
 | Default mode | always an editor | renders the note; one click opens the raw source |
 | Checkboxes | none | GFM task lists, clickable, one line rewritten per click |
 | External edits | not applicable | watched, reloaded, and guarded by a fingerprint + conflict banner |
 | Write strategy | writes the note it owns | atomic, byte-faithful; never regenerates Markdown from a parsed model |
-| Appearance options | note colour themes (white, yellow, translucent, …) | follows the Plasma theme; font size/family/monospace only |
+| Appearance | note colour themes (white, yellow, translucent, …) on Plasma's frame | opaque card with a drop shadow in Plasma theme colours; no scrollbars; font size/family/monospace options |
 | Obsidian integration | none | `[[wikilinks]]` and *Open in Obsidian* via `obsidian://` |
 
 Unchanged from upstream: it is still a Plasma applet, still behaves like a
 sticky note on the desktop or as a panel popup, and still uses Plasma's own
-widget chrome and configuration UI.
+configuration UI.
 
 ## License and attribution
 
 Licensed under the **GPL-2.0-or-later**; see [`LICENSE`](LICENSE) and
 [`LICENSES/`](LICENSES). Every source file carries an SPDX header.
+
+`qml/CalloutBlock.qml` is `GPL-2.0-or-later AND ISC`: its code is part of this
+project, while the callout icon path data in it is from
+[Lucide](https://lucide.dev) (copyright Lucide Contributors and Cole Bemis, ISC,
+[`LICENSES/ISC.txt`](LICENSES/ISC.txt)), the icon set Obsidian uses.
 
 This project is derived from the Plasma **notes** applet in
 [kdeplasma-addons](https://invent.kde.org/plasma/kdeplasma-addons)

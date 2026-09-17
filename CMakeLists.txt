@@ -41,9 +41,25 @@ plasma_add_applet(io.github.mrajster.obsidiannote GENERATE_APPLET_CLASS
         qml/config.qml
         qml/configNote.qml
         qml/configAppearance.qml
+        qml/ObsidianMetrics.qml
+        qml/BlockList.qml
+        qml/BlockDelegate.qml
+        qml/InlineText.qml
+        qml/HeadingBlock.qml
+        qml/ParagraphBlock.qml
+        qml/ListItemBlock.qml
+        qml/TaskCheckbox.qml
+        qml/BlockquoteBlock.qml
+        qml/CalloutBlock.qml
+        qml/CodeBlock.qml
+        qml/TableBlock.qml
+        qml/RuleBlock.qml
+        qml/PropertiesBlock.qml
+        qml/IndentGuides.qml
     CPP_SOURCES
         markdownnote.cpp
         taskmarkdown.cpp
+        markdownblocks.cpp
     RESOURCES
         main.xml
 )

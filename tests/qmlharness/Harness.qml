@@ -20,6 +20,7 @@
                         and its pure helpers are extracted and executed.
 */
 
+import QtCore
 import QtQuick
 import QtQuick.Window
 
@@ -39,6 +40,10 @@ Window {
     property int viewClickCount: 0
     property int ctrlECount: 0
     property int escapeCount: 0
+    property int editRequestCount: 0
+    property int toggleRequestCount: 0
+    property int lastToggleLine: -1
+    property string lastToggleExpected: ""
 
     // Ownership probe for the window-level click-out watcher.
     property var probeEditor: null
@@ -83,6 +88,17 @@ Window {
         path: torturePath
     }
 
+    // S2 editor round-trip: a scratch note (never the fixture) and a REAL
+    // plain-text TextEdit, i.e. exactly what EDIT mode puts the buffer through.
+    MarkdownNote {
+        id: fidelityNote
+    }
+    TextEdit {
+        id: fidelityEdit
+        visible: false
+        textFormat: TextEdit.PlainText
+    }
+
     // Mirrors main.qml's viewFocusScope + NoteView pair exactly, including the
     // Keys handler that owns Ctrl+E (enter EDIT) and Esc (dismiss).
     FocusScope {
@@ -108,12 +124,21 @@ Window {
             focus: true
 
             note: note
-            markdown: note.renderedText
-            fontSize: 10
+            basePointSize: 10
             fontFamily: "sans-serif"
+            readOnly: false
 
-            onEditRequested: harness.viewClickCount += 1
+            onEditRequested: {
+                harness.viewClickCount += 1;
+                harness.editRequestCount += 1;
+            }
             onLinkClicked: harness.viewClickCount += 1
+            // Recorded only: the harness must never write the torture fixture.
+            onTaskToggleRequested: (line, expected) => {
+                harness.toggleRequestCount += 1;
+                harness.lastToggleLine = line;
+                harness.lastToggleExpected = expected;
+            }
         }
     }
 
@@ -130,6 +155,7 @@ Window {
         text: note.editorText
         font.family: "monospace"
         font.pointSize: 10
+        contentPadding: view.metrics.containerPadding
 
         onOutsidePressed: harness.outsidePressCount += 1
     }
@@ -140,8 +166,12 @@ Window {
         harness.check("rawText non-empty", note.rawText.length > 100);
         harness.check("renderedText non-empty", note.renderedText.length > 100);
 
-        // The view really received the markdown.
-        harness.check("view.markdown == renderedText", view.markdown === note.renderedText);
+        // The view really received the block model.
+        // A QVariantList property yields a fresh JS array on every read, so
+        // identity (===) can never hold; compare the full content instead.
+        harness.check("view.blocks is note.blocks (deep-equal) && note.blocks.length > 20",
+                      note.blocks.length > 20 && view.blocks.length === note.blocks.length
+                      && JSON.stringify(view.blocks) === JSON.stringify(note.blocks));
         harness.check("editor.text == editorText", editor.text === note.editorText);
         harness.check("editor.length matches", editor.length === note.editorText.length);
 
@@ -153,6 +183,17 @@ Window {
         harness.check("real task is a toggle link", note.renderedText.indexOf("obsnote:toggle/128)") > -1);
         harness.check("fenced task is NOT a toggle link", note.renderedText.indexOf("obsnote:toggle/196)") === -1);
         harness.check("indented-code task is NOT a toggle link", note.renderedText.indexOf("obsnote:toggle/225)") === -1);
+
+        // ... and the block model the view draws agrees with the toggle links.
+        const task128 = harness.findBlock(note.blocks, b => b.kind === "task" && b.sourceLine === 128);
+        harness.check("block model: line 128 is a task block", task128 !== null);
+        harness.check("block model: line 128 task is toggleable", task128 !== null && task128.toggleable === true);
+        harness.check("block model: line 128 carries the exact raw line",
+                      task128 !== null && task128.expectedLineText === note.rawText.split("\n")[128]);
+        harness.check("block model: no task block for fenced line 196",
+                      harness.findBlock(note.blocks, b => b.kind === "task" && b.sourceLine === 196) === null);
+        harness.check("block model: no task block for indented-code line 225",
+                      harness.findBlock(note.blocks, b => b.kind === "task" && b.sourceLine === 225) === null);
 
         // Link round-trip through the C++ parsers, as main.qml's handleLink does.
         harness.check("toggleLineForLink round-trips", note.toggleLineForLink("obsnote:toggle/128") === 128);
@@ -177,14 +218,79 @@ Window {
         harness.check("obsidianUrl is an obsidian:// url", note.obsidianUrl().toString().indexOf("obsidian://open?path=") === 0);
 
         harness.checkBackendWiring();
+        harness.checkEditorByteFidelity();
         harness.checkSourceInvariants();
         harness.checkFileUrlEncoding();
         harness.checkDropAdvertisement();
     }
 
+    /** Depth-first search of a block list (and callout/blockquote children). */
+    function findBlock(blocks, pred) {
+        const bs = blocks || [];
+        for (let i = 0; i < bs.length; ++i) {
+            if (pred(bs[i])) {
+                return bs[i];
+            }
+            const inner = harness.findBlock(bs[i].children, pred);
+            if (inner !== null) {
+                return inner;
+            }
+        }
+        return null;
+    }
+
+    /** Depth-first search of the live item tree under @p item. */
+    function findItem(item, pred) {
+        const kids = item && item.children ? item.children : [];
+        for (let i = 0; i < kids.length; ++i) {
+            if (pred(kids[i])) {
+                return kids[i];
+            }
+            const inner = harness.findItem(kids[i], pred);
+            if (inner !== null) {
+                return inner;
+            }
+        }
+        return null;
+    }
+
     //
     // ---- 2. wiring: every backend member main.qml calls must exist ---------
     //
+
+    /**
+     * REGRESSION: entering and leaving EDIT mode without typing must write NOTHING.
+     * QQuickTextEdit hands back NBSP as ' ' and U+FDD0/U+FDD1 as "\n"; MarkdownNote
+     * used to see that as an edit and silently rewrote the note. This runs the
+     * real TextEdit, so a Qt change to that normalisation set fails here too.
+     */
+    function checkEditorByteFidelity() {
+        const dir = StandardPaths.writableLocation(StandardPaths.TempLocation).toString().replace(/^file:\/\//, "");
+        const path = dir + "/obsnote-harness-fidelity.md"; // overwritten every run
+        const nb = "\u00a0";
+        const original = "\ufeff---\r\ntitle: a" + nb + "b\r\n---\r\nPrice:" + nb + "100\r\n- [ ] task" + nb + "one\r\n"
+            + "x\ufdd0y\ufdd1z\u2028w\r\nend" + nb;
+        harness.check("fidelity: scratch note written", harnessHelper.writeTextFile(path, original));
+        fidelityNote.path = path;
+        harness.check("fidelity: scratch note Ready", fidelityNote.status === MarkdownNote.Ready);
+        const raw = fidelityNote.rawText;
+
+        fidelityEdit.text = fidelityNote.editorText; // main.qml beginEdit()
+        harness.check("fidelity: TextEdit holds exactly editorText (no phantom unsaved edits)",
+                      fidelityEdit.text === fidelityNote.editorText);
+        let saves = 0;
+        const onSaved = () => { saves += 1; };
+        fidelityNote.saved.connect(onSaved);
+        harness.check("fidelity: untouched commit succeeds", fidelityNote.saveBuffer(fidelityEdit.text)); // commitEdit()
+        harness.check("fidelity: untouched commit wrote nothing", saves === 0 && fidelityNote.rawText === raw);
+
+        fidelityEdit.text = fidelityEdit.text.replace("one", "ONE");
+        harness.check("fidelity: one-word edit saves", fidelityNote.saveBuffer(fidelityEdit.text));
+        harness.check("fidelity: one-word edit changed only that word",
+                      saves === 1 && fidelityNote.rawText === raw.replace("one", "ONE"));
+        fidelityNote.saved.disconnect(onSaved);
+        fidelityNote.path = "";
+    }
 
     function checkBackendWiring() {
         harness.check("backend has saveBuffer()", typeof note.saveBuffer === "function");
@@ -261,6 +367,28 @@ Window {
         // S6: the toggle always carries the expected line text.
         harness.check("toggles go through toggleTask(line, expectedText)",
                       src.indexOf("note.toggleTask(toggleLine, note.lineTextAt(toggleLine))") > -1);
+        // ... including the checkbox route, which carries the block's own raw line.
+        const toggleFn = harness.functionBody(src, "toggleTask");
+        harness.check("main.qml has toggleTask(line, expected)", toggleFn.length > 0);
+        harness.check("toggleTask() refuses a read-only note", toggleFn.indexOf("root.readOnly") > -1);
+        harness.check("toggleTask() hands the expected line to the backend",
+                      /\.toggleTask\(\s*line\s*,\s*expected\s*\)/.test(toggleFn));
+        harness.check("NoteView checkbox clicks are wired to toggleTask",
+                      /onTaskToggleRequested:[^\n]*toggleTask\(/.test(src));
+
+        // Opaque widget, no scrollbars, wrap instead of horizontal overflow.
+        harness.check("main.qml draws no translucent Plasma background (NoBackground)",
+                      src.indexOf("PlasmaCore.Types.NoBackground") > -1);
+        harness.check("NoteView uses no ScrollView", noteViewSource.indexOf("ScrollView") === -1);
+        harness.check("NoteView uses no ScrollBar", noteViewSource.indexOf("ScrollBar") === -1);
+        harness.check("NoteView pins contentWidth to the view width",
+                      noteViewSource.indexOf("contentWidth: width") > -1
+                      || noteViewSource.indexOf("contentWidth: flick.width") > -1);
+        harness.check("NoteView stops at bounds", noteViewSource.indexOf("StopAtBounds") > -1);
+        harness.check("NoteEditor vertical scrollbar AlwaysOff",
+                      /ScrollBar\.vertical\.policy:\s*QQC2\.ScrollBar\.AlwaysOff/.test(noteEditorSource));
+        harness.check("NoteEditor horizontal scrollbar AlwaysOff",
+                      /ScrollBar\.horizontal\.policy:\s*QQC2\.ScrollBar\.AlwaysOff/.test(noteEditorSource));
         harness.check("no bare toggleTaskAtLine call left", src.indexOf("toggleTaskAtLine") === -1);
 
         // S2: read-only files may be neither edited nor toggled.
@@ -442,7 +570,81 @@ Window {
         harnessHelper.pressAt(harness, 700, 800);
         harness.check("disarming the watch stops it again", harness.outsidePressCount === 2);
 
+        harness.runViewChecks();
         harness.startOwnershipCheck();
+    }
+
+    //
+    // ---- the new block view: real checkbox, real empty space, real geometry --
+    //
+    function runViewChecks() {
+        const flick = harness.findItem(view, o => ("flickableDirection" in o) && ("contentY" in o));
+        harness.check("NoteView has a Flickable", flick !== null);
+        if (flick === null) {
+            return;
+        }
+        harness.check("runtime: horizontal flicking impossible (contentWidth == width)",
+                      Math.abs(flick.contentWidth - flick.width) < 0.5);
+        harness.check("runtime: no ScrollBar item anywhere in the view",
+                      harness.findItem(view, o => harnessHelper.className(o).indexOf("ScrollBar") > -1) === null);
+        flick.contentY = 0;
+
+        // The first block top equals the editor's first text line top: both 2em.
+        const pad = view.metrics.containerPadding;
+        const firstDelegate = harness.findItem(view, o => ("modelData" in o) && ("availableWidth" in o)
+                                               && o.modelData && typeof o.modelData.kind === "string");
+        harness.check("view has block delegates", firstDelegate !== null);
+        if (firstDelegate !== null) {
+            const loaded = harness.findItem(firstDelegate, o => ("block" in o) && ("availableWidth" in o));
+            const top = (loaded !== null ? loaded : firstDelegate).mapToItem(view, 0, 0).y;
+            harness.check("first block top is 2em (" + top.toFixed(2) + " vs " + pad.toFixed(2) + ")",
+                          Math.abs(top - pad) <= 0.5);
+            const area = harness.findItem(editor, o => ("cursorRectangle" in o) && ("topPadding" in o)
+                                          && typeof o.positionToRectangle === "function");
+            harness.check("editor has a TextArea", area !== null);
+            if (area !== null) {
+                // Setting the text scrolled the editor to the cursor; measure from the top.
+                const editorFlick = harness.findItem(editor, o => ("flickableDirection" in o) && ("contentY" in o));
+                if (editorFlick !== null) {
+                    editorFlick.contentY = -editorFlick.topMargin; // the 2em is a Flickable margin
+                }
+                const editorTop = area.mapToItem(editor, 0, area.positionToRectangle(0).y).y;
+                harness.check("editor text top is 2em (" + editorTop.toFixed(2) + ")", Math.abs(editorTop - pad) <= 0.5);
+                harness.check("view first block top == editor text top", Math.abs(top - editorTop) <= 0.5);
+            }
+        }
+
+        // Click the REAL checkbox drawn for source line 128.
+        const del128 = harness.findItem(view, o => ("modelData" in o) && ("availableWidth" in o) && o.modelData
+                                        && o.modelData.kind === "task" && o.modelData.sourceLine === 128);
+        const box = del128 !== null ? harness.findItem(del128, o => o.isTaskCheckbox === true) : null;
+        harness.check("line 128 has a TaskCheckbox item", box !== null);
+        if (box !== null) {
+            harness.check("line 128 checkbox is interactive", box.interactive === true);
+            let c = box.mapToItem(view, box.width / 2, box.height / 2);
+            flick.contentY = Math.max(0, Math.min(flick.contentHeight - flick.height, flick.contentY + c.y - flick.height / 2));
+            c = box.mapToItem(harness.contentItem, box.width / 2, box.height / 2);
+            const before = note.rawText;
+            const toggles = harness.toggleRequestCount;
+            const edits = harness.editRequestCount;
+            harnessHelper.pressAt(harness, c.x, c.y);
+            harness.check("clicking the checkbox emits taskToggleRequested once", harness.toggleRequestCount === toggles + 1);
+            harness.check("taskToggleRequested carries line 128", harness.lastToggleLine === 128);
+            harness.check("taskToggleRequested carries the exact raw line",
+                          harness.lastToggleExpected === note.rawText.split("\n")[128]);
+            harness.check("a checkbox click is not an edit request", harness.editRequestCount === edits);
+            harness.check("the view itself never writes the file", note.rawText === before);
+        }
+
+        // Click empty space (the 2em top padding) -> edit request.
+        flick.contentY = 0;
+        const edits = harness.editRequestCount;
+        const toggles = harness.toggleRequestCount;
+        const empty = view.mapToItem(harness.contentItem, view.width - pad / 2, pad / 2);
+        harnessHelper.pressAt(harness, empty.x, empty.y);
+        harness.check("clicking empty space emits editRequested", harness.editRequestCount === edits + 1);
+        harness.check("clicking empty space toggles nothing", harness.toggleRequestCount === toggles);
+        harness.check("clicking empty space focuses the view", view.activeFocus === true);
     }
 
     //

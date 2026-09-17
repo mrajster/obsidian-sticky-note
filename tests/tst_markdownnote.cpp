@@ -14,6 +14,7 @@
       S7 atomic         - no in-place-truncate fallback, ever.
 */
 
+#include "markdownblocks.h"
 #include "markdownnote.h"
 #include "taskmarkdown.h"
 
@@ -22,8 +23,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QSignalSpy>
+
+#include <functional>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QVariantMap>
 
 namespace
 {
@@ -48,7 +52,13 @@ bool writeBytes(const QString &path, const QByteArray &bytes)
     return ok;
 }
 
-/** What a QQuickTextEdit does to a buffer: every line ending becomes "\n". */
+/**
+ * What a QQuickTextEdit (QTextDocument::toPlainText) does to a buffer: every line
+ * ending becomes "\n", the frame-marker noncharacters U+FDD0/U+FDD1 become "\n" and
+ * every NO-BREAK SPACE becomes a plain space. Measured over the whole BMP with a
+ * real TextEdit { textFormat: PlainText }; nothing else is rewritten. The QML
+ * harness re-checks this set against the live Qt so a Qt change cannot drift.
+ */
 QString normaliseLikeTextEdit(const QString &text)
 {
     QString out = text;
@@ -56,6 +66,9 @@ QString normaliseLikeTextEdit(const QString &text)
     out.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     out.replace(QChar(0x2028), QLatin1Char('\n'));
     out.replace(QChar(0x2029), QLatin1Char('\n'));
+    out.replace(QChar(0xFDD0), QLatin1Char('\n'));
+    out.replace(QChar(0xFDD1), QLatin1Char('\n'));
+    out.replace(QChar(0x00A0), QLatin1Char(' '));
     return out;
 }
 
@@ -195,6 +208,134 @@ private Q_SLOTS:
         edited.replace(QStringLiteral("omega"), QStringLiteral("OMEGA"));
         QVERIFY(note.saveBuffer(edited));
         QCOMPARE(readBytes(path), QStringLiteral("alpha beta\nOMEGA\n").toUtf8());
+    }
+
+    /**
+     * REGRESSION: entering EDIT mode and leaving it without typing rewrote any note
+     * containing a NO-BREAK SPACE (NBSP -> ' ') or U+FDD0/U+FDD1 (-> a new line),
+     * because QQuickTextEdit hands those back normalised and saveBuffer() saw a
+     * "changed" buffer. Untouched lines must come back byte-exact, and an edited
+     * line keeps the NBSPs in the part the user did not touch.
+     */
+    void testEditorNormalisedCharactersSurviveEditCommit()
+    {
+        const QString nbsp(QChar(0x00A0));
+        const QString fdd0(QChar(0xFDD0));
+        const QString fdd1(QChar(0xFDD1));
+        const QByteArray original = QStringLiteral("\xFEFF---\r\ntitle: a%1b\r\n---\r\nPrice:%1EUR%1ok\r\n- [ ] task%1one\r\nx%2y%3z\r\nend%1")
+                                        .arg(nbsp, fdd0, fdd1)
+                                        .toUtf8();
+        const QString path = makeFile(QStringLiteral("nbsp.md"), original);
+        MarkdownNote note;
+        note.setPath(path);
+        QCOMPARE(note.status(), MarkdownNote::Ready);
+        QVERIFY(note.readOnlyReason().isEmpty());
+
+        // editorText is exactly what the TextEdit will hold, so "unsaved edits" is false.
+        const QString buffer = note.editorText();
+        QCOMPARE(buffer, normaliseLikeTextEdit(note.rawText()));
+
+        // Enter + leave EDIT without typing: no write at all.
+        QSignalSpy saved(&note, &MarkdownNote::saved);
+        QVERIFY(note.saveBuffer(buffer));
+        QCOMPARE(saved.count(), 0);
+        QCOMPARE(readBytes(path), original);
+        QCOMPARE(note.restoreLineEndings(buffer), note.rawText());
+
+        // Edit ONE word on a line holding an NBSP: only those bytes change.
+        QString edited = buffer;
+        edited.replace(QStringLiteral("one"), QStringLiteral("ONE"));
+        QVERIFY(note.saveBuffer(edited));
+        QCOMPARE(saved.count(), 1);
+        QByteArray expected = original;
+        expected.replace("one", "ONE");
+        QCOMPARE(readBytes(path), expected);
+
+        // Append a line at the end: every earlier byte survives.
+        QVERIFY(note.saveBuffer(note.editorText() + QStringLiteral("\nnew")));
+        QCOMPARE(readBytes(path), expected + "\r\nnew");
+    }
+
+    /**
+     * Every checkbox the block model makes clickable, clicked the way ListItemBlock
+     * does it (block.sourceLine + block.expectedLineText), flips exactly ONE byte:
+     * the box of that very line. Shapes: UTF-8 BOM, CRLF, YAML frontmatter holding
+     * task-looking lines, multi-line + lazy continuation, nested and tab-indented
+     * tasks, tasks in a blockquote/callout (never clickable), fenced, indented and
+     * in-item fenced code (never clickable).
+     */
+    void testEveryClickableCheckboxFlipsExactlyItsOwnByte()
+    {
+        const QByteArray original = "\xEF\xBB\xBF---\r\ntitle: x\r\nnot_a_task: \"- [ ] fm\"\r\nlist:\r\n  - [ ] in yaml\r\n---\r\n\r\n# H\r\n\r\n"
+                                    "- [ ] one\r\n  continuation line\r\nlazy line\r\n- [x] two\r\n  - [ ] nested\r\n    - [X] deeper\r\n\r\n"
+                                    "  para in item\r\n  - [ ] after para\r\n\r\n> - [ ] quoted\r\n> [!todo] C\r\n> - [ ] in callout\r\n\r\n"
+                                    "```\r\n- [ ] fenced\r\n```\r\n\r\n    - [ ] indented code\r\n\r\n- item\r\n  ```\r\n  - [ ] fence in item\r\n  ```\r\n"
+                                    "1. [ ] ordered\r\n\t- [x] tab nested\r\n";
+        const QString path = makeFile(QStringLiteral("clicks.md"), original);
+
+        QList<QVariantMap> tasks;
+        std::function<void(const QVariantList &)> walk = [&](const QVariantList &blocks) {
+            for (const QVariant &v : blocks) {
+                const QVariantMap b = v.toMap();
+                if (b.value(QStringLiteral("kind")).toString() == QLatin1String("task")) {
+                    tasks.append(b);
+                }
+                walk(b.value(QStringLiteral("children")).toList());
+            }
+        };
+        {
+            MarkdownNote probe;
+            probe.setPath(path);
+            QCOMPARE(probe.status(), MarkdownNote::Ready);
+            walk(probe.blocks());
+        }
+
+        QList<int> clickable;
+        QList<int> inert;
+        for (const QVariantMap &b : std::as_const(tasks)) {
+            (b.value(QStringLiteral("toggleable")).toBool() ? clickable : inert).append(b.value(QStringLiteral("sourceLine")).toInt());
+        }
+        QCOMPARE(clickable, (QList<int>{9, 12, 13, 14, 17, 33, 34}));
+        QCOMPARE(inert, (QList<int>{19, 21}));
+
+        const QList<QByteArray> lines = original.split('\n');
+        for (const QVariantMap &b : std::as_const(tasks)) {
+            if (!b.value(QStringLiteral("toggleable")).toBool()) {
+                continue;
+            }
+            QVERIFY(writeBytes(path, original));
+            MarkdownNote note;
+            note.setPath(path);
+            const int line = b.value(QStringLiteral("sourceLine")).toInt();
+            QVERIFY2(note.toggleTask(line, b.value(QStringLiteral("expectedLineText")).toString()), qPrintable(QString::number(line)));
+
+            const QByteArray after = readBytes(path);
+            QCOMPARE(after.size(), original.size());
+            QList<qsizetype> diffs;
+            for (qsizetype k = 0; k < original.size(); ++k) {
+                if (original.at(k) != after.at(k)) {
+                    diffs.append(k);
+                }
+            }
+            QCOMPARE(diffs.size(), 1);
+            const qsizetype pos = diffs.first();
+            QCOMPARE(original.left(pos).count('\n'), qsizetype(line));
+            const qsizetype lineStart = original.lastIndexOf('\n', pos - 1) + 1;
+            const QByteArray lineBytes = lines.at(line);
+            QCOMPARE(pos - lineStart, qsizetype(lineBytes.indexOf('[') + 1));
+        }
+
+        // A hand-written toggle for any other line (fence, frontmatter, quote, prose) writes nothing.
+        for (int line = 0; line < lines.size(); ++line) {
+            if (clickable.contains(line)) {
+                continue;
+            }
+            QVERIFY(writeBytes(path, original));
+            MarkdownNote note;
+            note.setPath(path);
+            QVERIFY(!note.toggleTask(line, note.lineTextAt(line)));
+            QCOMPARE(readBytes(path), original);
+        }
     }
 
     /** A file without a trailing newline never grows one, and never loses one. */
@@ -693,6 +834,123 @@ private Q_SLOTS:
         QVERIFY2(!source.isEmpty(), MARKDOWNNOTE_CPP);
         QVERIFY2(source.contains("QSaveFile"), "the atomic write disappeared");
         QVERIFY2(!source.contains("setDirectWriteFallback(true)"), "setDirectWriteFallback(true) is back");
+    }
+
+    // -------------------------------------------------------- block model
+
+    void testBlocksEmptyWithoutPath()
+    {
+        MarkdownNote note;
+        QCOMPARE(note.status(), MarkdownNote::NoPath);
+        QVERIFY(note.blocks().isEmpty());
+        QCOMPARE(note.property("blocks").toList().size(), 0);
+
+        const QString path = makeFile(QStringLiteral("blocks-path.md"), QByteArray("# t\n- [ ] x\n"));
+        note.setPath(path);
+        QCOMPARE(note.blocks().size(), 2);
+        note.setPath(QString());
+        QVERIFY2(note.blocks().isEmpty(), "blocks survived clearing the path");
+    }
+
+    /** renderedTextChanged is the NOTIFY signal of blocks: it fires once per reload, after blocks is fresh. */
+    void testBlocksUpdateWithRenderedTextChanged()
+    {
+        const QString path = makeFile(QStringLiteral("blocks-reload.md"), QByteArray("- [ ] one\n"));
+        MarkdownNote note;
+        note.setPath(path);
+        QCOMPARE(note.blocks().size(), 1);
+
+        QVariantList seenInSlot;
+        int emissions = 0;
+        connect(&note, &MarkdownNote::renderedTextChanged, this, [&]() {
+            ++emissions;
+            seenInSlot = note.blocks();
+        });
+
+        QVERIFY(writeBytes(path, QByteArray("# heading\n\n- [x] one\n- [ ] two\n")));
+        note.reloadFromDisk();
+        QCOMPARE(emissions, 1);
+        QCOMPARE(seenInSlot, note.blocks());
+        QCOMPARE(note.blocks().size(), 3);
+        QCOMPARE(note.blocks().at(0).toMap().value(QStringLiteral("kind")).toString(), QStringLiteral("heading"));
+        QCOMPARE(note.blocks(), MarkdownBlocks::parse(note.rawText()));
+
+        // Reloading identical bytes does not re-emit.
+        note.reloadFromDisk();
+        QCOMPARE(emissions, 1);
+    }
+
+    /** A checkbox click routes a block's own (sourceLine, expectedLineText): exactly one byte changes. */
+    void testToggleThroughBlockChangesOneByte()
+    {
+        QFile fixture(QStringLiteral(TORTURE_FIXTURE));
+        QVERIFY(fixture.open(QIODevice::ReadOnly));
+        const QByteArray original = fixture.readAll();
+        QVERIFY(!original.isEmpty());
+
+        const QString path = makeFile(QStringLiteral("blocks-toggle.md"), original);
+        MarkdownNote note;
+        note.setPath(path);
+        QCOMPARE(note.status(), MarkdownNote::Ready);
+
+        int toggled = 0;
+        int refused = 0;
+        for (const QVariant &v : note.blocks()) {
+            const QVariantMap b = v.toMap();
+            if (b.value(QStringLiteral("kind")).toString() != QLatin1String("task")) {
+                continue;
+            }
+            const int line = b.value(QStringLiteral("sourceLine")).toInt();
+            const QString expected = b.value(QStringLiteral("expectedLineText")).toString();
+            const QByteArray before = readBytes(path);
+            const bool ok = note.toggleTask(line, expected);
+            QCOMPARE(ok, b.value(QStringLiteral("toggleable")).toBool());
+            const QByteArray after = readBytes(path);
+            if (!ok) {
+                QCOMPARE(after, before);
+                ++refused;
+                continue;
+            }
+            QCOMPARE(after.size(), before.size());
+            int diffs = 0;
+            for (qsizetype k = 0; k < after.size(); ++k) {
+                diffs += after.at(k) != before.at(k) ? 1 : 0;
+            }
+            QCOMPARE(diffs, 1);
+            // The block list is rebuilt from the new bytes and reflects the flip.
+            bool found = false;
+            for (const QVariant &nv : note.blocks()) {
+                const QVariantMap nb = nv.toMap();
+                if (nb.value(QStringLiteral("kind")).toString() == QLatin1String("task") && nb.value(QStringLiteral("sourceLine")).toInt() == line) {
+                    QCOMPARE(nb.value(QStringLiteral("checked")).toBool(), !b.value(QStringLiteral("checked")).toBool());
+                    found = true;
+                }
+            }
+            QVERIFY(found);
+            ++toggled;
+            if (toggled == 3) {
+                break;
+            }
+        }
+        QCOMPARE(toggled, 3);
+        QCOMPARE(refused, 0);
+
+        // A task drawn inside a blockquote is not toggleable, and the note agrees.
+        const QByteArray before = readBytes(path);
+        int quoted = 0;
+        for (const QVariant &v : note.blocks()) {
+            for (const QVariant &c : v.toMap().value(QStringLiteral("children")).toList()) {
+                const QVariantMap b = c.toMap();
+                if (b.value(QStringLiteral("kind")).toString() != QLatin1String("task")) {
+                    continue;
+                }
+                QVERIFY(!b.value(QStringLiteral("toggleable")).toBool());
+                QVERIFY(!note.toggleTask(b.value(QStringLiteral("sourceLine")).toInt(), b.value(QStringLiteral("expectedLineText")).toString()));
+                ++quoted;
+            }
+        }
+        QCOMPARE(quoted, 4); // two in a callout, two in a plain blockquote
+        QCOMPARE(readBytes(path), before);
     }
 };
 

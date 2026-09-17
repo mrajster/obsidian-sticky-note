@@ -16,6 +16,7 @@
 #include <QString>
 #include <QStringList>
 #include <QUrl>
+#include <QVariantList>
 
 #include <qqmlregistration.h>
 
@@ -59,6 +60,8 @@ class MarkdownNote : public QObject
     Q_PROPERTY(QString rawText READ rawText NOTIFY rawTextChanged)
     /** rawText transformed by TaskMarkdown::render(); feed to Text.textFormat=MarkdownText. */
     Q_PROPERTY(QString renderedText READ renderedText NOTIFY renderedTextChanged)
+    /** MarkdownBlocks::parse(rawText); recomputed at the same point as renderedText. */
+    Q_PROPERTY(QVariantList blocks READ blocks NOTIFY renderedTextChanged)
     /** See Status. */
     Q_PROPERTY(MarkdownNote::Status status READ status NOTIFY statusChanged)
     /** Human-readable last error, "" when none. */
@@ -103,6 +106,7 @@ public:
     QString fileName() const;
     QString rawText() const;
     QString renderedText() const;
+    QVariantList blocks() const;
     Status status() const;
     QString errorString() const;
 
@@ -266,6 +270,7 @@ private:
     QString m_path;
     QString m_raw;
     QString m_rendered;
+    QVariantList m_blocks;
     QString m_errorString;
     QString m_readOnlyReason;
     Status m_status = NoPath;

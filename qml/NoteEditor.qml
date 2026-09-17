@@ -9,6 +9,7 @@
 */
 
 import QtQuick
+import QtQuick.Controls as QQC2
 import QtQuick.Window
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.kirigami as Kirigami
@@ -17,6 +18,11 @@ import org.kde.kirigami as Kirigami
  * Raw markdown editor. Plain text only -- RichText here would HTML-mangle the
  * vault file, and nothing in this applet is ever allowed to write anything
  * derived from QTextDocument::toMarkdown().
+ *
+ * Same padding and base font size as the rendered view (contentPadding is bound
+ * to NoteView.metrics.containerPadding), so switching VIEW <-> EDIT does not
+ * make the text jump. Like the view it never draws a scrollbar: the text wraps
+ * to the width, and wheel/touch still scroll vertically.
  */
 FocusScope {
     id: editorRoot
@@ -29,6 +35,30 @@ FocusScope {
     property alias canRedo: area.canRedo
     property alias canPaste: area.canPaste
     property alias selectedText: area.selectedText
+
+    /** Inner padding on all four sides; main.qml binds NoteView.metrics.containerPadding. */
+    property real contentPadding: 0
+
+    /**
+     * Drawn above the raw text, inside the scrolled area (main.qml: the inline
+     * title, like Obsidian's source mode keeps it) so VIEW -> EDIT does not pull
+     * the whole note up by the title's height.
+     */
+    property Component header: null
+    /** Gap between the header and the first text line. */
+    property real headerSpacing: 0
+
+    /** Scrollable space above the first text line: the padding plus the header. */
+    readonly property real topInset: editorRoot.contentPadding
+        + (headerLoader.item ? headerLoader.item.height + editorRoot.headerSpacing : 0)
+
+    /** Scrolls back to the very top, header included. */
+    function scrollToTop() {
+        const f = editScroll.contentItem;
+        if (f && f.contentY !== undefined) {
+            f.contentY = -f.topMargin;
+        }
+    }
 
     /** True while the actual TextArea holds the keyboard focus. */
     readonly property bool editorActiveFocus: area.activeFocus
@@ -61,6 +91,21 @@ FocusScope {
     signal contextMenuRequested()
     /** A press landed in this window, outside outsideBoundsItem. Commit and leave EDIT. */
     signal outsidePressed()
+
+    /**
+     * Scrolls so buffer position @p pos sits at @p viewY (editorRoot
+     * coordinates), clamped to the scrollable range. Used on VIEW -> EDIT so the
+     * clicked block's source line stays where the block was drawn.
+     */
+    function alignPositionTo(pos: int, viewY: real) {
+        const f = editScroll.contentItem;
+        if (!f || f.contentY === undefined) {
+            return;
+        }
+        const r = area.positionToRectangle(Math.max(0, Math.min(pos, area.length)));
+        const maxY = Math.max(-f.topMargin, f.contentHeight + f.bottomMargin - f.height);
+        f.contentY = Math.max(-f.topMargin, Math.min(r.y - viewY, maxY));
+    }
 
     function forceEditorFocus() {
         area.forceActiveFocus();
@@ -139,6 +184,21 @@ FocusScope {
         anchors.fill: parent
         clip: true
 
+        // No scrollbar on either axis, ever (same rule as NoteView).
+        QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
+        QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
+
+        Binding {
+            target: editScroll.contentItem
+            property: "topMargin"
+            value: editorRoot.topInset
+        }
+        Binding {
+            target: editScroll.contentItem
+            property: "bottomMargin"
+            value: editorRoot.contentPadding
+        }
+
         PlasmaComponents3.TextArea {
             id: area
 
@@ -149,8 +209,29 @@ FocusScope {
             // Kills the widgets/lineedit FrameSvg so the note looks like a note.
             background: null
             color: Kirigami.Theme.textColor
-            wrapMode: TextEdit.Wrap
+            // Anywhere as a fallback: an unbreakable run must never widen the
+            // content past the viewport (there is no horizontal scrollbar).
+            wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
+            leftPadding: editorRoot.contentPadding
+            rightPadding: editorRoot.contentPadding
+            // The vertical 2em lives in the Flickable's top/bottomMargin, NOT in
+            // top/bottomPadding: a scrolled QQuickTextEdit culls its text blocks
+            // to the viewport shrunk by its own vertical padding (Qt 6.11), so
+            // with padding the top and bottom 2em of the viewport showed blank
+            // paper while scrolled.
+            topPadding: 0
+            bottomPadding: 0
             persistentSelection: true
+
+            Loader {
+                id: headerLoader
+
+                x: area.leftPadding
+                y: editorRoot.contentPadding - editorRoot.topInset
+                width: Math.max(0, area.width - area.leftPadding - area.rightPadding)
+                active: editorRoot.header !== null
+                sourceComponent: editorRoot.header
+            }
 
             Keys.onPressed: event => {
                 if (event.key === Qt.Key_Escape) {
