@@ -1,0 +1,66 @@
+# Build trees
+/build/
+/build-*/
+/out/
+/_build/
+
+# CMake artefacts
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+install_manifest.txt
+CTestTestfile.cmake
+Testing/
+compile_commands.json
+*.cmake.in.out
+Makefile
+!/scripts/Makefile
+
+# Qt / moc / qmake leftovers
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.moc
+*.qmlc
+*.jsc
+.qmake.stash
+.qt/
+.rcc/
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.so
+*.so.*
+*.a
+*.lo
+*.la
+*.dylib
+*.dll
+*.exe
+
+# Editor / IDE junk
+*~
+*.swp
+*.swo
+*.bak
+*.orig
+*.rej
+.idea/
+*.iml
+.vscode/
+.cache/
+.clangd/
+.ccls-cache/
+.kdev4/
+*.kdev4
+.DS_Store
+Thumbs.db
+tags
+TAGS
+
+# Local scratch
+/tmp/
+*.log

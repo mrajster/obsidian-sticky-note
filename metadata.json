@@ -1,0 +1,28 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "obsidian-sticky-note contributors"
+            },
+            {
+                "Email": "bettio@kde.org, lukas.krop@gmail.com",
+                "Name": "Davide Bettio, Lukas Kropatschek"
+            }
+        ],
+        "BugReportUrl": "https://github.com/mrajster/obsidian-sticky-note/issues",
+        "Category": "Utilities",
+        "Description": "Edit a Markdown note from your Obsidian vault",
+        "Icon": "text-markdown",
+        "License": "GPL-2.0-or-later",
+        "Name": "Obsidian Note",
+        "Version": "1.0.0",
+        "Website": "https://github.com/mrajster/obsidian-sticky-note"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-DropMimeTypes": [
+        "text/markdown",
+        "text/plain",
+        "text/x-markdown"
+    ]
+}
