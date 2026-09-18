@@ -19,6 +19,7 @@ import org.kde.plasma.components as PlasmaComponents3
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.plasma.plasmoid
 import org.kde.kirigami as Kirigami
+import org.kde.ksvg as KSvg
 
 PlasmoidItem {
     id: root
@@ -30,9 +31,8 @@ PlasmoidItem {
     height: Kirigami.Units.gridUnit * 30 // default size for fullRepresentation
 
     Plasmoid.icon: "text-markdown"
-    // DECISION: no Plasma frame at all. DefaultBackground is the translucent,
-    // blurred dialog SVG; the widget instead draws its own OPAQUE theme-coloured
-    // card (see `card` in the full representation) so a note reads like a page.
+    // No Plasma frame: like upstream's notes applet, the full representation
+    // draws the widgets/notes paper SVG itself (see `paper`).
     Plasmoid.backgroundHints: PlasmaCore.Types.NoBackground
 
     expandedOnDragHover: true
@@ -83,6 +83,37 @@ PlasmoidItem {
     readonly property bool compactInPanel: inPanel && !!compactRepresentationItem?.visible
     /** Shown inside a panel popup: the popup dialog already has its own frame. */
     readonly property bool inPopup: root.inPanel && root.compactInPanel
+
+    // this isn't a frameSVG, the default SVG margins take up around 7% of the frame size, so we use that
+    // (upstream notes applet; Breeze's widgets/notes elements carry no hint-*-margin elements)
+    readonly property int horizontalMargins: fullRep ? Math.round(fullRep.width * 0.07) : 0
+    readonly property int verticalMargins: fullRep ? Math.round(fullRep.height * 0.07) : 0
+    // In a panel when it is translucent, the panel background is used, so we use the normal text color, and remove any margins.
+    property bool noBackground: false // binding in onCompleted to avoid binding loop
+
+    // define colors used for icons in ToolButtons and for text in TextArea.
+    // this is deliberately _NOT_ the theme color as we are over a known bright background!
+    // except in a panel when it is translucent, the panel background is used, so we use the normal text color.
+    // an unknown colour over a known colour is a bad move as you end up with white on yellow.
+    readonly property color textIconColor: {
+        if (noBackground) {
+            return Kirigami.Theme.textColor;
+        } else if (Plasmoid.configuration.color === "black" || Plasmoid.configuration.color === "translucent-light") {
+            return "#dfdfdf";
+        }
+        return "#202020";
+    }
+
+    /**
+     * The one colour source for everything drawn on the paper (rendered note,
+     * raw editor, inline title, footer label). paperSample is filled in by the
+     * full representation's sampler from the active theme's SVG element.
+     */
+    readonly property NotePalette notePalette: NotePalette {
+        color: Plasmoid.configuration.color
+        noBackground: root.noBackground
+        textIconColor: root.textIconColor
+    }
     // Dynamic lookups through this are expected to produce qmllint
     // "missing-property" warnings; the full representation is a Component.
     readonly property Item fullRep: fullRepresentationItem
@@ -201,6 +232,9 @@ PlasmoidItem {
             Plasmoid.configuration.fontSize = 12;
         }
         root.syncNotePath();
+
+        // set imperatively to avoid binding loop during startup
+        root.noBackground = Qt.binding(() => inPanel && (Plasmoid.configuration.color === "translucent" || Plasmoid.configuration.color === "translucent-light"))
     }
 
     //
@@ -538,6 +572,49 @@ PlasmoidItem {
         }
     }
 
+    // ---- note colour (upstream notes applet) ----
+    PlasmaCore.ActionGroup {
+        id: noteColorGroup
+    }
+
+    Instantiator {
+        model: {
+            let model = [
+                {text: i18nc("@item:inmenu", "White"), color: "white"},
+                {text: i18nc("@item:inmenu", "Black"), color: "black"},
+                {text: i18nc("@item:inmenu", "Red"), color: "red"},
+                {text: i18nc("@item:inmenu", "Orange"), color: "orange"},
+                {text: i18nc("@item:inmenu", "Yellow"), color: "yellow"},
+                {text: i18nc("@item:inmenu", "Green"), color: "green"},
+                {text: i18nc("@item:inmenu", "Blue"), color: "blue"},
+                {text: i18nc("@item:inmenu", "Pink"), color: "pink"},
+                {text: i18nc("@item:inmenu", "Transparent"), color: "translucent"},
+            ];
+            // Explicit translucent light makes no sense in a panel since it will always be the popup background.
+            if (!root.inPanel) {
+                model.push({text: i18nc("@item:inmenu", "Transparent Light"), color: "translucent-light"});
+            }
+            return model;
+        }
+
+        onObjectAdded: (index, object) => {
+            Plasmoid.contextualActions.push(object);
+        }
+
+        PlasmaCore.Action {
+            required text
+            required property string color
+
+            icon.icon: NotesHelper.noteIcon(color)
+            actionGroup: noteColorGroup
+            checkable: true
+            checked: (Plasmoid.configuration.color === color)
+            // Pretend to be translucent if translucent light in a panel to allow roaming between panel and desktop.
+                     || (root.inPanel && color === "translucent" && Plasmoid.configuration.color === "translucent-light")
+            onTriggered: Plasmoid.configuration.color = color
+        }
+    }
+
     //
     // ---- file dialog ------------------------------------------------------
     //
@@ -701,32 +778,129 @@ PlasmoidItem {
                 }
             }
 
-            // The opaque card. Replaces the translucent DefaultBackground frame.
-            Kirigami.ShadowedRectangle {
-                id: card
+            // The sticky-note paper (upstream notes applet): the widgets/notes
+            // element of the configured colour, drawn by the Plasma theme.
+            KSvg.SvgItem {
+                id: paper
 
                 anchors.fill: parent
-                // NoBackground also dropped the shadow Plasma draws around its
-                // standard frame; draw an equivalent one around the card.
-                shadow.size: root.inPopup ? 0 : Kirigami.Units.gridUnit
-                shadow.yOffset: root.inPopup ? 0 : 2
-                shadow.color: Qt.rgba(0, 0, 0, 0.4)
-                Kirigami.Theme.colorSet: Kirigami.Theme.View
-                Kirigami.Theme.inherit: false
-                color: Kirigami.Theme.backgroundColor
-                radius: root.inPopup ? 0 : Kirigami.Units.cornerRadius
-                border.width: root.inPopup ? 0 : 1
-                border.color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, Kirigami.Theme.frameContrast)
+                imagePath: root.noBackground ? "" : "widgets/notes"
+                elementId: Plasmoid.configuration.color + "-notes"
+            }
+
+            // Samples the active theme's paper element (top, middle, bottom of
+            // its gradient) into root.notePalette.paperSample, so the contrast floors
+            // hold for themes whose notes.svg is not Breeze's. Invisible: an
+            // opacity-0 parent does not stop grabToImage() from rendering it.
+            Item {
+                id: paperSampler
+
+                width: 48
+                height: 48
+                opacity: 0
+                enabled: false
+
+                readonly property string element: root.noBackground ? "" : paperSampleSvg.elementId
+
+                KSvg.SvgItem {
+                    id: paperSampleSvg
+
+                    anchors.fill: parent
+                    imagePath: "widgets/notes"
+                    elementId: Plasmoid.configuration.color + "-notes"
+                }
+
+                Canvas {
+                    id: paperSampleCanvas
+
+                    anchors.fill: parent
+                    property url grabbed
+                    property string forElement
+
+                    onImageLoaded: paperSampleCanvas.requestPaint()
+                    onPaint: {
+                        if (paperSampleCanvas.grabbed.toString() === ""
+                            || !paperSampleCanvas.isImageLoaded(paperSampleCanvas.grabbed)) {
+                            return;
+                        }
+                        const ctx = paperSampleCanvas.getContext("2d");
+                        ctx.clearRect(0, 0, width, height);
+                        ctx.drawImage(paperSampleCanvas.grabbed, 0, 0, width, height);
+                        const d = ctx.getImageData(0, 0, width, height).data;
+                        const stops = [];
+                        // Rows at 15 / 50 / 85 %, averaged over the middle half of the width.
+                        for (const fy of [0.15, 0.5, 0.85]) {
+                            const y = Math.floor(height * fy);
+                            let r = 0, g = 0, b = 0, n = 0;
+                            for (let x = Math.floor(width / 4); x < Math.ceil(width * 3 / 4); ++x) {
+                                const i = (y * width + x) * 4;
+                                if (d[i + 3] < 250) {
+                                    // Not an opaque paper (translucent element, or missing): keep the table.
+                                    root.notePalette.paperSample = null;
+                                    return;
+                                }
+                                r += d[i]; g += d[i + 1]; b += d[i + 2]; ++n;
+                            }
+                            stops.push(Qt.rgba(r / n / 255, g / n / 255, b / n / 255, 1));
+                        }
+                        if (paperSampleCanvas.forElement === paperSampler.element) {
+                            root.notePalette.paperSample = stops;
+                        }
+                    }
+                }
+
+                function sample() {
+                    if (paperSampler.element === "") {
+                        root.notePalette.paperSample = null;
+                        return;
+                    }
+                    const forElement = paperSampler.element;
+                    paperSampleSvg.grabToImage(result => {
+                        paperSampleCanvas.forElement = forElement;
+                        if (paperSampleCanvas.grabbed.toString() !== "") {
+                            paperSampleCanvas.unloadImage(paperSampleCanvas.grabbed);
+                        }
+                        paperSampleCanvas.grabbed = result.url;
+                        paperSampleCanvas.loadImage(result.url);
+                        if (paperSampleCanvas.isImageLoaded(result.url)) {
+                            paperSampleCanvas.requestPaint();
+                        }
+                    });
+                }
+
+                onElementChanged: {
+                    // The table is right for Breeze until the new sample lands.
+                    root.notePalette.paperSample = null;
+                    sampleTimer.restart();
+                }
+                Component.onCompleted: sampleTimer.restart()
+
+                Timer {
+                    id: sampleTimer
+                    interval: 250
+                    onTriggered: paperSampler.sample()
+                }
             }
 
             ColumnLayout {
                 id: mainColumn
 
-                anchors.fill: parent
-                // Inside the card's 1 px frame, no more: the 2em reading margin
-                // lives inside NoteView / NoteEditor.
-                anchors.margins: card.border.width
+                anchors {
+                    fill: parent
+                    leftMargin: root.noBackground ? 0 : root.horizontalMargins
+                    rightMargin: root.noBackground ? 0 : root.horizontalMargins
+                    topMargin: root.noBackground ? 0 : root.verticalMargins
+                    bottomMargin: root.noBackground ? 0 : root.verticalMargins
+                }
                 spacing: 0
+
+                // Everything on the paper that is drawn with theme colours
+                // (banners, placeholder, footer label) gets the paper's palette
+                // instead: dark theme text on yellow paper is unreadable.
+                Kirigami.Theme.textColor: root.notePalette.text
+                Kirigami.Theme.disabledTextColor: root.notePalette.mutedText
+                Kirigami.Theme.linkColor: root.notePalette.link
+                Kirigami.Theme.visitedLinkColor: root.notePalette.link
 
                 Kirigami.InlineMessage {
                     id: conflictBanner
@@ -815,19 +989,30 @@ PlasmoidItem {
                     }
                 }
 
-                PlasmaExtras.PlaceholderMessage {
+                // PlasmaExtras.PlaceholderMessage's own shape, rebuilt so that
+                // every glyph takes its colour from notePalette.
+                //
+                // It CANNOT be the stock component: inside a plasmoid the
+                // Kirigami.Theme attached object is Plasma's PlasmaTheme, which
+                // re-derives every colour from the Plasma colour scheme per item
+                // instead of inheriting a custom colour from an ancestor. The
+                // Kirigami.Theme.* block above therefore reaches mainColumn only
+                // (measured: mainColumn textColor #dfdfdf, its Heading/Label
+                // descendants #232629), which left the stock placeholder drawing
+                // dark theme text on black paper at 1.05 : 1.
+                ColumnLayout {
                     id: placeholder
 
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     Layout.margins: Kirigami.Units.gridUnit
+                    spacing: Kirigami.Units.gridUnit
 
                     visible: note.status === MarkdownNote.NoPath
                         || note.status === MarkdownNote.Missing
                         || note.status === MarkdownNote.LoadError
 
-                    iconName: "text-markdown"
-                    text: {
+                    readonly property string title: {
                         switch (note.status) {
                         case MarkdownNote.Missing:
                             return i18n("The Markdown file does not exist");
@@ -837,14 +1022,56 @@ PlasmoidItem {
                             return i18n("No Markdown file selected");
                         }
                     }
-                    explanation: note.status === MarkdownNote.NoPath
+                    readonly property string explanation: note.status === MarkdownNote.NoPath
                         ? i18n("Pick a note from your Obsidian vault to show and edit it here.")
                         : (note.errorString !== "" ? note.errorString : note.path)
 
-                    helpfulAction: Kirigami.Action {
+                    Item {
+                        Layout.fillHeight: true
+                    }
+
+                    Kirigami.Icon {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.preferredWidth: Math.round(Kirigami.Units.iconSizes.huge * 1.5)
+                        Layout.preferredHeight: Layout.preferredWidth
+
+                        source: "text-markdown"
+                        // text-markdown is a mimetype icon (hardcoded #6c7a89):
+                        // drawn as a mask it follows the paper like every other glyph.
+                        isMask: true
+                        color: root.notePalette.mutedText
+                    }
+
+                    PlasmaExtras.Heading {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Qt.AlignHCenter
+                        wrapMode: Text.Wrap
+                        type: PlasmaExtras.Heading.Type.Primary
+                        text: placeholder.title
+                        color: root.notePalette.text
+                    }
+
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        horizontalAlignment: Qt.AlignHCenter
+                        wrapMode: Text.Wrap
+                        visible: placeholder.explanation !== ""
+                        text: placeholder.explanation
+                        color: root.notePalette.text
+                        linkColor: root.notePalette.link
+                    }
+
+                    PlasmaComponents3.Button {
+                        Layout.alignment: Qt.AlignHCenter
+                        Layout.topMargin: Kirigami.Units.gridUnit
+
                         text: i18nc("@action:button", "Choose Markdown File…")
                         icon.name: "document-open"
-                        onTriggered: root.pickFile()
+                        onClicked: root.pickFile()
+                    }
+
+                    Item {
+                        Layout.fillHeight: true
                     }
                 }
 
@@ -878,6 +1105,7 @@ PlasmoidItem {
 
                             // Must be qualified; see root.noteBackend.
                             note: root.noteBackend
+                            notePalette: root.notePalette
                             basePointSize: Plasmoid.configuration.fontSize || 12
                             fontFamily: Plasmoid.configuration.fontFamily !== ""
                                 ? Plasmoid.configuration.fontFamily
@@ -902,6 +1130,7 @@ PlasmoidItem {
 
                             anchors.fill: parent
                             focus: true
+                            notePalette: root.notePalette
 
                             // NoteEditor deliberately does not import
                             // org.kde.plasma.plasmoid, so the configuration
@@ -982,7 +1211,7 @@ PlasmoidItem {
                 Rectangle {
                     Layout.fillWidth: true
                     implicitHeight: 1
-                    color: card.border.color
+                    color: root.notePalette.border
                 }
 
                 RowLayout {
@@ -990,7 +1219,7 @@ PlasmoidItem {
 
                     Layout.fillWidth: true
                     // Line the file name up with the note text column.
-                    Layout.leftMargin: Math.max(0, noteView.metrics.containerPadding - card.border.width)
+                    Layout.leftMargin: noteView.metrics.containerPadding
                     Layout.rightMargin: Kirigami.Units.smallSpacing
                     Layout.topMargin: Kirigami.Units.smallSpacing
                     Layout.bottomMargin: Kirigami.Units.smallSpacing
@@ -1003,6 +1232,7 @@ PlasmoidItem {
                         Layout.fillWidth: true
                         visible: Plasmoid.configuration.showFileName
                         text: note.fileName
+                        color: root.notePalette.text
                         elide: Text.ElideMiddle
                         textFormat: Text.PlainText
 
@@ -1026,6 +1256,7 @@ PlasmoidItem {
                         id: modeButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         icon.name: root.editMode ? "document-save" : "document-edit"
                         text: root.editMode ? i18nc("@action:button", "Done") : i18nc("@action:button", "Edit")
@@ -1047,6 +1278,7 @@ PlasmoidItem {
                         id: reloadButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         icon.name: "view-refresh"
                         text: i18nc("@action:button", "Reload from Disk")
@@ -1062,6 +1294,7 @@ PlasmoidItem {
                         id: openButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         icon.name: "document-open"
                         text: i18nc("@action:button", "Open Markdown File…")
@@ -1076,6 +1309,7 @@ PlasmoidItem {
                         id: obsidianButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         visible: note.status === MarkdownNote.Ready
                         icon.name: "emblem-symbolic-link"
@@ -1091,6 +1325,7 @@ PlasmoidItem {
                         id: pinButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         visible: root.compactInPanel
                         checkable: true
@@ -1115,6 +1350,7 @@ PlasmoidItem {
                         id: settingsButton
 
                         focusPolicy: Qt.TabFocus
+                        icon.color: root.textIconColor
                         display: PlasmaComponents3.AbstractButton.IconOnly
                         icon.name: "configure"
                         text: Plasmoid.internalAction("configure").text
@@ -1155,7 +1391,7 @@ PlasmoidItem {
                     color: "transparent"
                     radius: Kirigami.Units.cornerRadius
                     border.width: 2
-                    border.color: Kirigami.Theme.highlightColor
+                    border.color: root.notePalette.accent
                 }
             }
 

@@ -28,6 +28,7 @@ Item {
     required property var block
     required property ObsidianMetrics metrics
     required property real availableWidth
+    property NotePalette notePalette: null
 
     signal toggleRequested(int sourceLine, string expectedLineText)
 
@@ -139,7 +140,11 @@ Item {
         height: callout.metrics.calloutPadTop + callout.metrics.calloutTitleLineHeight
             + callout.bodyHeight + callout.metrics.calloutPadBottom
         radius: callout.metrics.calloutRadius
-        color: Qt.rgba(callout.typeColor.r, callout.typeColor.g, callout.typeColor.b, 0.1)
+        // NotePalette.calloutTint: the callout colour at 10 %, or a contrast-safe lift where that tint
+        // would push the body text under 4.5 : 1 (dark text on red paper).
+        color: callout.notePalette
+            ? callout.notePalette.calloutTint(callout.typeColor)
+            : Qt.rgba(callout.typeColor.r, callout.typeColor.g, callout.typeColor.b, 0.1)
     }
 
     Item {
@@ -215,6 +220,7 @@ Item {
         Component.onCompleted: body.setSource("BlockList.qml", {
             blocks: callout.children_,
             metrics: callout.metrics,
+            notePalette: callout.notePalette,
             availableWidth: callout.innerWidth,
             inCallout: true
         })

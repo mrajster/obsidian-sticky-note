@@ -19,6 +19,7 @@ Item {
     required property int index
     required property ObsidianMetrics metrics
     required property real availableWidth
+    property NotePalette notePalette: null
 
     signal taskToggleRequested(int sourceLine, string expectedLineText)
 
@@ -90,11 +91,11 @@ Item {
     }
     Component {
         id: blockquoteComponent
-        BlockquoteBlock { block: del.modelData; metrics: del.metrics; availableWidth: del.contentWidth }
+        BlockquoteBlock { block: del.modelData; metrics: del.metrics; notePalette: del.notePalette; availableWidth: del.contentWidth }
     }
     Component {
         id: calloutComponent
-        CalloutBlock { block: del.modelData; metrics: del.metrics; availableWidth: del.contentWidth }
+        CalloutBlock { block: del.modelData; metrics: del.metrics; notePalette: del.notePalette; availableWidth: del.contentWidth }
     }
     Component {
         id: codeComponent

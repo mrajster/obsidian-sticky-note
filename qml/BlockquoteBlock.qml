@@ -16,6 +16,7 @@ Item {
     required property var block
     required property ObsidianMetrics metrics
     required property real availableWidth
+    property NotePalette notePalette: null
 
     signal toggleRequested(int sourceLine, string expectedLineText)
 
@@ -42,6 +43,7 @@ Item {
         Component.onCompleted: body.setSource("BlockList.qml", {
             blocks: quote.children_,
             metrics: quote.metrics,
+            notePalette: quote.notePalette,
             availableWidth: quote.bodyWidth
         })
     }

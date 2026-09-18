@@ -26,6 +26,41 @@ KCM.SimpleKCM {
     property alias cfg_showFileName: fileNameCheck.checked
 
     property string cfg_notePathDefault: ""
+    property bool cfg_createIfMissingDefault: true
+    property int cfg_autosaveIntervalDefault: 10000
+    property bool cfg_showFileNameDefault: true
+
+    // Keys owned by other pages or by the widget itself. The config dialog passes every key
+    // (and its ...Default) as an initial property, so each must exist here or Qt warns
+    // "Setting initial properties failed". The dialog also writes every cfg_ property back on
+    // Apply, so saveConfig() refreshes these from the live configuration first: the write-back
+    // is then a no-op and cannot revert state the widget changed while the dialog was open.
+    readonly property var foreignKeys: ["color", "fontSize", "fontFamily", "monospaceInEditMode",
+        "showInlineTitle", "showProperties", "cursorPosition", "scrollY", "pinOpen"]
+    property string cfg_color
+    property string cfg_colorDefault
+    property int cfg_fontSize
+    property int cfg_fontSizeDefault
+    property string cfg_fontFamily
+    property string cfg_fontFamilyDefault
+    property bool cfg_monospaceInEditMode
+    property bool cfg_monospaceInEditModeDefault
+    property bool cfg_showInlineTitle
+    property bool cfg_showInlineTitleDefault
+    property bool cfg_showProperties
+    property bool cfg_showPropertiesDefault
+    property int cfg_cursorPosition
+    property int cfg_cursorPositionDefault
+    property real cfg_scrollY
+    property real cfg_scrollYDefault
+    property bool cfg_pinOpen
+    property bool cfg_pinOpenDefault
+
+    function saveConfig() {
+        for (const key of kcm.foreignKeys) {
+            kcm["cfg_" + key] = Plasmoid.configuration[key];
+        }
+    }
 
     Kirigami.FormLayout {
 

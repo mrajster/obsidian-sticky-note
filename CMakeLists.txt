@@ -27,10 +27,19 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui Quick)
-find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS CoreAddons Config I18n)
+find_package(KF6 ${KF6_MIN_VERSION} REQUIRED COMPONENTS CoreAddons Config I18n Svg)
 find_package(Plasma ${KF6_MIN_VERSION} REQUIRED)
 
 add_definitions(-DTRANSLATION_DOMAIN="plasma_applet_io.github.mrajster.obsidiannote")
+
+# qml/NotePalette.qml (per-paper colour palette) is added by a separate change;
+# include it as soon as it exists. Depending on the qml/ directory itself makes
+# adding the file re-run cmake, so it never silently stays out of the build.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/qml")
+set(OBSIDIANNOTE_PALETTE_QML "")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/qml/NotePalette.qml")
+    set(OBSIDIANNOTE_PALETTE_QML qml/NotePalette.qml)
+endif()
 
 plasma_add_applet(io.github.mrajster.obsidiannote GENERATE_APPLET_CLASS
     QML_SOURCES
@@ -56,10 +65,13 @@ plasma_add_applet(io.github.mrajster.obsidiannote GENERATE_APPLET_CLASS
         qml/RuleBlock.qml
         qml/PropertiesBlock.qml
         qml/IndentGuides.qml
+        ${OBSIDIANNOTE_PALETTE_QML}
     CPP_SOURCES
         markdownnote.cpp
         taskmarkdown.cpp
         markdownblocks.cpp
+        noteiconengine.cpp
+        noteshelper.cpp
     RESOURCES
         main.xml
 )
@@ -70,6 +82,7 @@ target_link_libraries(io.github.mrajster.obsidiannote PRIVATE
     Qt6::Quick
     KF6::CoreAddons
     KF6::I18n
+    KF6::Svg
 )
 
 # ---------------------------------------------------------------------------

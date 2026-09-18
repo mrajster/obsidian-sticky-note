@@ -58,6 +58,26 @@ add_test(NAME tst_markdownnote COMMAND tst_markdownnote)
 set_tests_properties(tst_markdownnote PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
 # --------------------------------------------------------------------------
+# NotesHelper::noteIcon() (context-menu note colour icons) for all 10 colours.
+# --------------------------------------------------------------------------
+add_executable(tst_noteshelper
+    tst_noteshelper.cpp
+    ${CMAKE_SOURCE_DIR}/noteshelper.cpp
+    ${CMAKE_SOURCE_DIR}/noteiconengine.cpp
+)
+target_include_directories(tst_noteshelper PRIVATE ${CMAKE_SOURCE_DIR})
+target_link_libraries(tst_noteshelper PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Test
+    KF6::Svg
+    Plasma::Plasma
+)
+add_test(NAME tst_noteshelper COMMAND tst_noteshelper)
+set_tests_properties(tst_noteshelper PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+# --------------------------------------------------------------------------
 # Headless QML smoke test: instantiates the REAL NoteView.qml / NoteEditor.qml
 # against the torture fixture and fails on any QML warning or error.
 # --------------------------------------------------------------------------
@@ -73,6 +93,9 @@ if(TARGET Qt6::Quick)
         HeadingBlock.qml ParagraphBlock.qml ListItemBlock.qml TaskCheckbox.qml
         BlockquoteBlock.qml CalloutBlock.qml CodeBlock.qml TableBlock.qml
         RuleBlock.qml PropertiesBlock.qml IndentGuides.qml)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/qml/NotePalette.qml")
+        list(APPEND _obsnote_view_qml NotePalette.qml)
+    endif()
     set(_obsnote_view_qml_copies)
     foreach(_f IN LISTS _obsnote_view_qml)
         configure_file("${CMAKE_SOURCE_DIR}/qml/${_f}" "${CMAKE_CURRENT_BINARY_DIR}/qmlharness/${_f}" COPYONLY)

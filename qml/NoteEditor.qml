@@ -12,7 +12,6 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Window
 import org.kde.plasma.components as PlasmaComponents3
-import org.kde.kirigami as Kirigami
 
 /**
  * Raw markdown editor. Plain text only -- RichText here would HTML-mangle the
@@ -35,6 +34,9 @@ FocusScope {
     property alias canRedo: area.canRedo
     property alias canPaste: area.canPaste
     property alias selectedText: area.selectedText
+
+    /** Text and selection colours; main.qml passes the same instance NoteView uses. */
+    property NotePalette notePalette: NotePalette {}
 
     /** Inner padding on all four sides; main.qml binds NoteView.metrics.containerPadding. */
     property real contentPadding: 0
@@ -208,7 +210,9 @@ FocusScope {
             textFormat: TextEdit.PlainText
             // Kills the widgets/lineedit FrameSvg so the note looks like a note.
             background: null
-            color: Kirigami.Theme.textColor
+            color: editorRoot.notePalette.text
+            selectionColor: editorRoot.notePalette.selection
+            selectedTextColor: editorRoot.notePalette.selectedText
             // Anywhere as a fallback: an unbreakable run must never widen the
             // content past the viewport (there is no horizontal scrollbar).
             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere

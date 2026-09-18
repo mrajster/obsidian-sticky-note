@@ -13,6 +13,9 @@
   <kcfgfile name=""/>
 
   <group name="General">
+    <entry name="color" type="String">
+      <default>yellow</default>
+    </entry>
     <entry name="notePath" type="Path">
       <default></default>
     </entry>

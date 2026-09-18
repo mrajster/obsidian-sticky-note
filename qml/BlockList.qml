@@ -21,6 +21,8 @@ Column {
     required property ObsidianMetrics metrics
     required property real availableWidth
     property bool inCallout: false
+    /** Colours that are not a plain metrics colour (CalloutBlock's box tint); null = metrics only. */
+    property NotePalette notePalette: null
 
     /** A checkbox inside this list (or any nested list) was clicked. */
     signal taskToggleRequested(int sourceLine, string expectedLineText)
@@ -37,6 +39,7 @@ Column {
 
         delegate: BlockDelegate {
             metrics: list.metrics
+            notePalette: list.notePalette
             availableWidth: list.availableWidth
             onTaskToggleRequested: (line, expected) => list.taskToggleRequested(line, expected)
         }

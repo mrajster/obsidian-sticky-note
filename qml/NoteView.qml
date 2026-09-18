@@ -9,7 +9,6 @@
 */
 
 import QtQuick
-import org.kde.kirigami as Kirigami
 
 /**
  * Read-only rendered view of the note, laid out on Obsidian's reading-view
@@ -41,24 +40,34 @@ FocusScope {
     /** "" when the pointer is not over a link. */
     readonly property string linkUnderCursor: clickCatcher.hoverLink
 
+    /**
+     * Every colour the view draws with. main.qml passes its single instance
+     * (paper colour, noBackground); the default is only for standalone use (tests).
+     */
+    property NotePalette notePalette: NotePalette {}
+
     readonly property ObsidianMetrics metrics: ObsidianMetrics {
         basePointSize: viewRoot.basePointSize
         textFamily: viewRoot.fontFamily
 
-        textColor: Kirigami.Theme.textColor
-        mutedTextColor: Kirigami.Theme.disabledTextColor
-        linkColor: Kirigami.Theme.linkColor
-        backgroundColor: Kirigami.Theme.backgroundColor
-        codeBackgroundColor: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.07)
-        codeTextColor: Kirigami.Theme.textColor
-        tagTextColor: Kirigami.Theme.linkColor
-        tagBackgroundColor: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.linkColor, 0.15)
-        markBackgroundColor: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.neutralTextColor, 0.35)
-        borderColor: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.2)
-        accentColor: Kirigami.Theme.highlightColor
-        positiveColor: Kirigami.Theme.positiveTextColor
-        neutralColor: Kirigami.Theme.neutralTextColor
-        negativeColor: Kirigami.Theme.negativeTextColor
+        // Colours only; this is the channel every block component reads them
+        // through (and ObsidianMetrics.resolveInline fills %LINK% / %CODEFG% /
+        // %TAGFG% from). Nothing below reads Kirigami.Theme.
+        textColor: viewRoot.notePalette.text
+        mutedTextColor: viewRoot.notePalette.mutedText
+        linkColor: viewRoot.notePalette.link
+        // TaskCheckbox cuts its check mark in this colour out of the accent fill.
+        backgroundColor: viewRoot.notePalette.checkboxCheck
+        codeBackgroundColor: viewRoot.notePalette.codeBackground
+        codeTextColor: viewRoot.notePalette.codeText
+        tagTextColor: viewRoot.notePalette.tagText
+        tagBackgroundColor: viewRoot.notePalette.tagBackground
+        markBackgroundColor: viewRoot.notePalette.highlightBackground
+        borderColor: viewRoot.notePalette.border
+        accentColor: viewRoot.notePalette.checkboxFill
+        positiveColor: viewRoot.notePalette.positive
+        neutralColor: viewRoot.notePalette.neutral
+        negativeColor: viewRoot.notePalette.negative
     }
 
     /** The block stack (for tests and geometry dumps). */
@@ -289,6 +298,7 @@ FocusScope {
                 y: titleLoader.item ? titleLoader.item.height + viewRoot.metrics.inlineTitleMarginBottom : 0
                 blocks: viewRoot.visibleBlocks
                 metrics: viewRoot.metrics
+                notePalette: viewRoot.notePalette
                 availableWidth: content.width
 
                 onTaskToggleRequested: (line, expected) => viewRoot.taskToggleRequested(line, expected)

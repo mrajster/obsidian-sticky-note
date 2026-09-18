@@ -378,6 +378,8 @@ buffer over the file — the only path that overwrites a changed file). A
 read-only banner appears for non-UTF-8 files; a confirmation banner appears
 before a reload would discard unsaved changes.
 
+**Note colour.** The paper is one of 10 sticky-note colours drawn from the Plasma theme's `widgets/notes` SVG — yellow by default — set in *Settings → Appearance* or from the applet's Plasma menu (the desktop handle's ⋮, or a right-click on its panel icon).
+
 **Config options** (right-click → *Configure Obsidian Note…*):
 
 | Page | Option | Default |
@@ -386,6 +388,7 @@ before a reload would discard unsaved changes.
 | File | Create the file if it does not exist | on |
 | File | Autosave delay (`0` = `Off`, up to 600 s) | 10 s |
 | File | Show file name in the toolbar (the footer) | on |
+| Appearance | Note colour — 10 sticky-note papers drawn from the Plasma theme (white, black, red, orange, yellow, green, blue, pink, transparent, transparent light) | yellow |
 | Appearance | Text font size | 12 pt (= 16 px, Obsidian's default body size) |
 | Appearance | Text font | theme default |
 | Appearance | Use a monospace font while editing | on |
@@ -512,7 +515,7 @@ does not fail the build.
 | Checkboxes | none | GFM task lists, clickable, one line rewritten per click |
 | External edits | not applicable | watched, reloaded, and guarded by a fingerprint + conflict banner |
 | Write strategy | writes the note it owns | atomic, byte-faithful; never regenerates Markdown from a parsed model |
-| Appearance | note colour themes (white, yellow, translucent, …) on Plasma's frame | opaque card with a drop shadow in Plasma theme colours; no scrollbars; font size/family/monospace options |
+| Appearance | note colour themes (white, yellow, translucent, …) on Plasma's frame | the same 10 note colours, on a card with a drop shadow; no scrollbars; font size/family/monospace options |
 | Obsidian integration | none | `[[wikilinks]]` and *Open in Obsidian* via `obsidian://` |
 
 Unchanged from upstream: it is still a Plasma applet, still behaves like a
