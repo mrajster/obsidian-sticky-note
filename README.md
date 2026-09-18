@@ -15,6 +15,8 @@ Applet id: `io.github.mrajster.obsidiannote` · Plasma 6 · GPL-2.0-or-later
 | **View mode.** The note is rendered with Obsidian's reading-view formatting; task checkboxes are clickable and write straight to the file. | **Edit mode.** A click on the text opens the raw Markdown source at the clicked line. Same padding and base size as the view. |
 | ![The widget configuration page for choosing the Markdown file](docs/screenshots/03-config-file-page.png) | ![The widget sitting on the Plasma desktop](docs/screenshots/04-on-desktop.png) |
 | **Configuration.** Bind the widget to any `.md` file; autosave delay and the file-name footer label live here too. | **On the desktop.** An opaque card with a drop shadow; the file name and buttons sit in a footer inside the card. |
+| ![The Appearance page's sticky-note colour picker, showing several of the ten paper swatches](docs/screenshots/06-appearance-colors.png) | |
+| **Note colour.** Pick one of ten sticky-note papers — the same set as upstream's Sticky Note — from the Appearance page or the applet's context menu. | |
 
 ## Features
 
